@@ -1,0 +1,2538 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>O'Neill Cylinder — Pure WebGL2 Cinematic</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: #060a14;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      user-select: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+    canvas:active { cursor: grabbing; }
+    #hud {
+      position: fixed; top: 16px; left: 16px;
+      padding: 12px 16px;
+      background: rgba(10, 18, 32, 0.62);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 10px;
+      color: #f0f6ff; font-size: 13px; line-height: 1.55;
+      pointer-events: none; transition: opacity 0.25s ease; z-index: 10;
+    }
+    #hud.hidden { opacity: 0; }
+    #hud .title { font-weight: 700; font-size: 14px; letter-spacing: 0.03em; margin-bottom: 4px; color: #fff; }
+    #hud .mode-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.04em; margin-bottom: 6px;
+      background: rgba(86, 188, 255, 0.25); border: 1px solid rgba(130, 210, 255, 0.5); color: #bfe8ff;
+    }
+    #hud .mode-badge.free {
+      background: rgba(94, 234, 154, 0.22); border-color: rgba(120, 245, 175, 0.5); color: #c5ffe0;
+    }
+    #hud .controls { color: rgba(230, 242, 255, 0.85); font-size: 12px; }
+    #hud kbd {
+      display: inline-block; padding: 1px 5px; border-radius: 4px;
+      background: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.22);
+      font-family: inherit; font-size: 11px; color: #fff;
+    }
+    #fps { margin-top: 4px; font-size: 11px; color: rgba(200, 225, 255, 0.72); font-variant-numeric: tabular-nums; }
+    #fade-overlay {
+      position: fixed; inset: 0; background: #04070f;
+      opacity: 0; pointer-events: none; z-index: 5;
+    }
+    #error-box {
+      display: none; position: fixed; inset: 0;
+      background: #111827; color: #f87171; padding: 32px; font-size: 16px; z-index: 100;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas"></canvas>
+  <div id="fade-overlay"></div>
+  <div id="hud">
+    <div class="title">O'NEILL CYLINDER — PCF SHADOW + HDR BLOOM</div>
+    <div>
+      <span id="mode-badge" class="mode-badge">CINEMATIC AUTO-DRIVE</span>
+      <span id="time-badge" class="mode-badge">AUTO CYCLE</span>
+    </div>
+    <div class="controls">
+      <div><kbd>C</kbd> 시네마틱 / 자유 탐색 전환</div>
+      <div id="free-controls" style="display:none;">
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 이동 · 마우스 드래그 시점 회전 · <kbd>Space</kbd>/<kbd>Shift</kbd> 상하
+      </div>
+      <div><kbd>1</kbd> 낮 · <kbd>2</kbd> 밤 · <kbd>3</kbd> 자동 시간 흐름</div>
+      <div><kbd>R</kbd> 90초 시네마틱 영상 녹화 (.webm)</div>
+      <div><kbd>H</kbd> HUD 숨기기 (클린 모드)</div>
+    </div>
+    <div id="fps">FPS: --</div>
+  </div>
+  <div id="error-box"></div>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const canvas = document.getElementById('glcanvas');
+      const hudEl = document.getElementById('hud');
+      const modeBadgeEl = document.getElementById('mode-badge');
+      const timeBadgeEl = document.getElementById('time-badge');
+      const freeControlsEl = document.getElementById('free-controls');
+      const fadeOverlayEl = document.getElementById('fade-overlay');
+      const fpsEl = document.getElementById('fps');
+      const errorBox = document.getElementById('error-box');
+
+      function showError(msg) {
+        errorBox.style.display = 'block';
+        errorBox.textContent = 'WebGL2 Error: ' + msg;
+        console.error(msg);
+      }
+
+      const gl = canvas.getContext('webgl2', {
+        antialias: false, // Post-processing FBO handles final image
+        alpha: false,
+        powerPreference: 'high-performance'
+      });
+      if (!gl) {
+        showError('이 브라우저는 WebGL2를 지원하지 않습니다.');
+        return;
+      }
+
+      const hasFloatFBO = !!gl.getExtension('EXT_color_buffer_float');
+      const RADIUS = 100.0;
+      const LENGTH = 800.0;
+      const HALF_LENGTH = LENGTH * 0.5;
+      const SHADOW_RES = 2048;
+
+      // =========================================================================
+      // Matrix & Vector Math
+      // =========================================================================
+      function mat4Perspective(out, fovy, aspect, near, far) {
+        const f = 1.0 / Math.tan(fovy * 0.5);
+        const nf = 1.0 / (near - far);
+        out[0] = f / aspect; out[1] = 0; out[2] = 0; out[3] = 0;
+        out[4] = 0; out[5] = f; out[6] = 0; out[7] = 0;
+        out[8] = 0; out[9] = 0; out[10] = (far + near) * nf; out[11] = -1;
+        out[12] = 0; out[13] = 0; out[14] = 2 * far * near * nf; out[15] = 0;
+        return out;
+      }
+
+      function mat4Ortho(out, l, r, b, t, n, f) {
+        const lr = 1 / (l - r), bt = 1 / (b - t), nf = 1 / (n - f);
+        out[0] = -2 * lr; out[1] = 0; out[2] = 0; out[3] = 0;
+        out[4] = 0; out[5] = -2 * bt; out[6] = 0; out[7] = 0;
+        out[8] = 0; out[9] = 0; out[10] = 2 * nf; out[11] = 0;
+        out[12] = (l + r) * lr; out[13] = (t + b) * bt; out[14] = (f + n) * nf; out[15] = 1;
+        return out;
+      }
+
+      function mat4LookAt(out, eye, center, up) {
+        let zx = eye[0] - center[0], zy = eye[1] - center[1], zz = eye[2] - center[2];
+        let len = Math.hypot(zx, zy, zz) || 1;
+        zx /= len; zy /= len; zz /= len;
+        let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+        len = Math.hypot(xx, xy, xz) || 1;
+        xx /= len; xy /= len; xz /= len;
+        const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+        out[0] = xx; out[1] = yx; out[2] = zx; out[3] = 0;
+        out[4] = xy; out[5] = yy; out[6] = zy; out[7] = 0;
+        out[8] = xz; out[9] = yz; out[10] = zz; out[11] = 0;
+        out[12] = -(xx * eye[0] + xy * eye[1] + xz * eye[2]);
+        out[13] = -(yx * eye[0] + yy * eye[1] + yz * eye[2]);
+        out[14] = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
+        out[15] = 1;
+        return out;
+      }
+
+      function mat4Mul(out, a, b) {
+        for (let c = 0; c < 4; c++) {
+          const b0 = b[c * 4], b1 = b[c * 4 + 1], b2 = b[c * 4 + 2], b3 = b[c * 4 + 3];
+          out[c * 4]     = a[0] * b0 + a[4] * b1 + a[8]  * b2 + a[12] * b3;
+          out[c * 4 + 1] = a[1] * b0 + a[5] * b1 + a[9]  * b2 + a[13] * b3;
+          out[c * 4 + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3;
+          out[c * 4 + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3;
+        }
+        return out;
+      }
+
+      // =========================================================================
+      // Shader Helpers
+      // =========================================================================
+      function compileShader(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          const info = gl.getShaderInfoLog(shader);
+          gl.deleteShader(shader);
+          throw new Error(info);
+        }
+        return shader;
+      }
+
+      function createProgram(vsSource, fsSource) {
+        const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+        const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+        const prog = gl.createProgram();
+        gl.attachShader(prog, vs);
+        gl.attachShader(prog, fs);
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(prog));
+        }
+        gl.deleteShader(vs);
+        gl.deleteShader(fs);
+        return prog;
+      }
+
+      // =========================================================================
+      // Deterministic Procedural Terrain (JS side)
+      // =========================================================================
+      function fract(x) { return x - Math.floor(x); }
+      function lerp(a, b, t) { return a + (b - a) * t; }
+      function smoothstep(e0, e1, x) {
+        const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+        return t * t * (3 - 2 * t);
+      }
+      function hash2(x, y) { return fract(Math.sin(x * 127.1 + y * 311.7) * 43758.5453123); }
+      function noise2(x, y) {
+        const ix = Math.floor(x), iy = Math.floor(y);
+        const fx = x - ix, fy = y - iy;
+        const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+        return lerp(lerp(hash2(ix, iy), hash2(ix + 1, iy), ux), lerp(hash2(ix, iy + 1), hash2(ix + 1, iy + 1), ux), uy);
+      }
+
+      function getStripInfo(theta) {
+        // Continuous 360-degree cylinder terrain (sunlight enters from +Z dome, stars at -Z dome)
+        return { c4: 1.0, windowMask: 0.0 };
+      }
+
+      function getRiverFactor(theta, z) {
+        const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
+        const dTheta = theta - sector;
+        const riverCenter = 0.16 + 0.045 * Math.sin(z * 0.025) + 0.02 * Math.cos(z * 0.055);
+        return 1.0 - smoothstep(0.022, 0.048, Math.abs(dTheta - riverCenter));
+      }
+
+      function getTerrainHeight(theta, z) {
+        const { windowMask } = getStripInfo(theta);
+        if (windowMask > 0.95) return -0.4;
+
+        const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
+        const dTheta = Math.abs(theta - sector);
+        const lawnFlat = smoothstep(0.08, 0.22, dTheta);
+
+        const n1 = noise2(theta * 4.5 + 3.1, z * 0.015);
+        const n2 = noise2(theta * 10.0 + 7.4, z * 0.035);
+        let h = (n1 * 5.2 + n2 * 1.8 - 1.5) * lawnFlat;
+        h += 0.35 * Math.sin(z * 0.02) * Math.cos(theta * 8.0);
+
+        const river = getRiverFactor(theta, z);
+        h = lerp(h, -1.6, river);
+
+        // Terraced rice paddies along one hillside slope
+        const terraceZone = smoothstep(0.28, 0.42, Math.sin(z * 0.018 + sector * 2.0))
+                          * smoothstep(0.14, 0.19, dTheta) * (1.0 - smoothstep(0.32, 0.36, dTheta))
+                          * (1.0 - river);
+        if (terraceZone > 0.01) {
+          const stepSize = 0.85;
+          const stepped = Math.floor(h / stepSize) * stepSize + smoothstep(0.72, 0.98, fract(h / stepSize)) * stepSize;
+          h = lerp(h, stepped, terraceZone);
+        }
+
+        h = lerp(h, -0.4, windowMask);
+        return h;
+      }
+
+      // Village cluster centers (shared between cottage placement & night ground-light pools)
+      const VILLAGE_CLUSTERS = [
+        { theta: -Math.PI * 0.5 - 0.14, z: -180 },
+        { theta: -Math.PI * 0.5 + 0.11, z: -90 },
+        { theta: -Math.PI * 0.5 - 0.13, z: 30 },
+        { theta: -Math.PI * 0.5 + 0.11, z: 140 },
+        { theta: 0.12, z: -60 },
+        { theta: Math.PI * 0.5 - 0.12, z: 40 },
+        { theta: Math.PI - 0.12, z: -110 }
+      ];
+
+      // =========================================================================
+      // Common GLSL: Linear HDR Lighting, Atmospheric Scattering & PCF Shadows
+      // =========================================================================
+      const COMMON_GLSL = `
+        uniform float uNight;
+        uniform float uDusk;
+        uniform mat4 uLightViewProj;
+        uniform sampler2D uShadowMap;
+        const vec3 SUN_DIR = normalize(vec3(0.24, 0.44, 0.86));
+
+        vec3 getSkyFogColor() {
+          vec3 dayFog = vec3(0.52, 0.75, 0.96);
+          vec3 duskFog = vec3(0.92, 0.46, 0.34);
+          vec3 nightFog = vec3(0.025, 0.045, 0.11);
+          vec3 c = mix(dayFog, nightFog, uNight);
+          return mix(c, duskFog, uDusk * 0.78);
+        }
+
+        vec3 getDirectLightColor() {
+          vec3 daySun = vec3(1.42, 1.18, 0.86);
+          vec3 duskSun = vec3(1.55, 0.64, 0.26);
+          vec3 nightMoon = vec3(0.18, 0.26, 0.46);
+          vec3 c = mix(daySun, nightMoon, uNight);
+          return mix(c, duskSun, uDusk * 0.85);
+        }
+
+        vec3 getAmbientTint() {
+          vec3 dayAmb = vec3(1.0, 1.0, 1.0);
+          vec3 duskAmb = vec3(0.92, 0.64, 0.58);
+          vec3 nightAmb = vec3(0.16, 0.22, 0.40);
+          vec3 c = mix(dayAmb, nightAmb, uNight);
+          return mix(c, duskAmb, uDusk * 0.72);
+        }
+
+        float calcShadowPCF(vec3 worldPos, vec3 N) {
+          vec4 lp = uLightViewProj * vec4(worldPos, 1.0);
+          vec3 proj = lp.xyz / lp.w * 0.5 + 0.5;
+          if (proj.x < 0.01 || proj.x > 0.99 || proj.y < 0.01 || proj.y > 0.99 || proj.z > 0.999) {
+            return 1.0;
+          }
+          float bias = max(0.0022 * (1.0 - max(dot(N, SUN_DIR), 0.0)), 0.00055);
+          float texel = 1.0 / 2048.0;
+          float shadow = 0.0;
+          for (int x = -1; x <= 1; x++) {
+            for (int y = -1; y <= 1; y++) {
+              float pcfDepth = texture(uShadowMap, proj.xy + vec2(float(x), float(y)) * texel).r;
+              shadow += (proj.z - bias > pcfDepth) ? 0.0 : 1.0;
+            }
+          }
+          return shadow / 9.0;
+        }
+
+        // Outputs Linear HDR color (tone-mapped later in Bloom + ACES composite pass)
+        vec3 applyAtmosphericHDR(vec3 color, float dist, vec3 worldPos) {
+          vec3 rayDir = normalize(worldPos - uCamPos);
+          float sunAlign = max(dot(rayDir, SUN_DIR), 0.0);
+          vec3 baseFog = getSkyFogColor();
+          vec3 sunTint = mix(vec3(1.15, 0.96, 0.76), vec3(1.25, 0.54, 0.28), uDusk);
+          vec3 fogCol = mix(baseFog, sunTint, pow(sunAlign, 4.0) * 0.55 * (1.0 - uNight * 0.88));
+
+          float f = 1.0 - exp(-pow(max(dist, 0.0) * 0.0020, 1.32));
+          float endHaze = smoothstep(320.0, 415.0, abs(worldPos.z)) * 0.58;
+          f = clamp(max(f, endHaze), 0.0, 1.0);
+
+          vec3 hdr = mix(color, fogCol, f);
+          hdr += vec3(0.30, 0.20, 0.10) * pow(sunAlign, 6.0) * (0.25 + 0.75 * f) * (1.0 - uNight * 0.90);
+          return hdr;
+        }
+      `;
+
+      // =========================================================================
+      // Depth-Only Shadow Shaders
+      // =========================================================================
+      const shadowSimpleVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec3 aPos;
+        layout(location = 3) in vec3 aInstPos;
+        layout(location = 4) in vec3 aInstUp;
+        layout(location = 5) in vec3 aInstMeta;
+        uniform mat4 uLightViewProj;
+        void main() {
+          vec3 up = normalize(aInstUp);
+          vec3 axial = vec3(0.0, 0.0, 1.0);
+          vec3 right = normalize(cross(up, axial));
+          axial = cross(right, up);
+          float ca = cos(aInstMeta.x), sa = sin(aInstMeta.x);
+          vec3 rx = right * ca + axial * sa;
+          vec3 rz = -right * sa + axial * ca;
+          vec3 local = aPos * aInstMeta.y;
+          vec3 worldPos = aInstPos + rx * local.x + up * local.y + rz * local.z;
+          gl_Position = uLightViewProj * vec4(worldPos, 1.0);
+        }
+      `;
+
+      const shadowArchVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec3 aPos;
+        layout(location = 2) in vec3 aInstData;
+        uniform mat4 uLightViewProj;
+        void main() {
+          float theta = aInstData.x + aPos.x * aInstData.z;
+          float r = 100.0 - aPos.y;
+          vec3 worldPos = vec3(r * cos(theta), r * sin(theta), aInstData.y + aPos.z);
+          gl_Position = uLightViewProj * vec4(worldPos, 1.0);
+        }
+      `;
+
+      const shadowLeafVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec2 aQuad;
+        layout(location = 1) in vec3 aInstPos;
+        layout(location = 2) in vec4 aInstMeta;
+        uniform mat4 uLightViewProj;
+        out vec2 vUV;
+        out float vType;
+        void main() {
+          vec3 right = normalize(vec3(0.88, -0.28, 0.0));
+          vec3 up = normalize(cross(right, vec3(0.28, 0.88, 0.38)));
+          vec3 worldPos = aInstPos + (right * aQuad.x + up * aQuad.y) * aInstMeta.x;
+          vUV = aQuad * 0.5 + 0.5;
+          vType = aInstMeta.z;
+          gl_Position = uLightViewProj * vec4(worldPos, 1.0);
+        }
+      `;
+
+      const shadowLeafFS = `#version 300 es
+        precision highp float;
+        in vec2 vUV;
+        in float vType;
+        uniform sampler2D uLeafAtlas;
+        out vec4 fragColor;
+        void main() {
+          vec2 atlasUV = vec2(vUV.x * 0.5 + (vType < 0.5 ? 0.0 : 0.5), vUV.y);
+          float a = texture(uLeafAtlas, atlasUV).a;
+          if (a < 0.35) discard;
+          fragColor = vec4(1.0);
+        }
+      `;
+
+      const shadowEmptyFS = `#version 300 es
+        precision highp float;
+        out vec4 fragColor;
+        void main() { fragColor = vec4(1.0); }
+      `;
+
+      // =========================================================================
+      // 1. Cylinder Terrain Shader (Voronoi + FBM Patches, Rice Paddies, River, Night Village Glow)
+      // =========================================================================
+      const terrainVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec3 aPos;
+        layout(location = 1) in vec3 aNormal;
+        layout(location = 2) in vec3 aData;
+        uniform mat4 uViewProj;
+        out vec3 vWorldPos;
+        out vec3 vNormal;
+        out vec3 vData;
+        void main() {
+          vWorldPos = aPos; vNormal = aNormal; vData = aData;
+          gl_Position = uViewProj * vec4(aPos, 1.0);
+        }
+      `;
+
+      const terrainFS = `#version 300 es
+        precision highp float;
+        in vec3 vWorldPos;
+        in vec3 vNormal;
+        in vec3 vData;
+        uniform vec3 uCamPos;
+        uniform float uTime;
+        out vec4 fragColor;
+        ${COMMON_GLSL}
+
+        float hash21(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
+        }
+        vec2 hash22(vec2 p) {
+          return vec2(hash21(p), hash21(p + vec2(37.1, 19.7)));
+        }
+        float vnoise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
+            mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x),
+            f.y
+          );
+        }
+        float fbm(vec2 p) {
+          float v = 0.0, a = 0.5;
+          for (int i = 0; i < 3; i++) {
+            v += a * vnoise(p);
+            p = p * 2.03 + vec2(17.1, 31.7);
+            a *= 0.5;
+          }
+          return v;
+        }
+        // Returns (cellID, edgeDist)
+        vec2 voronoi2(vec2 x) {
+          vec2 n = floor(x), f = fract(x);
+          float md = 8.0, id = 0.0;
+          for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+              vec2 g = vec2(float(i), float(j));
+              vec2 o = hash22(n + g);
+              vec2 r = g + o - f;
+              float d = dot(r, r);
+              if (d < md) { md = d; id = o.x; }
+            }
+          }
+          return vec2(id, sqrt(md));
+        }
+
+        void main() {
+          float theta = vData.x;
+          float windowMask = vData.y;
+          float riverMask = vData.z;
+
+          vec3 N = normalize(vNormal);
+          vec3 V = normalize(uCamPos - vWorldPos);
+          float dist = length(uCamPos - vWorldPos);
+          vec3 inward = normalize(vec3(-vWorldPos.x, -vWorldPos.y, 0.0));
+
+          vec2 cylUV = vec2(theta * 100.0, vWorldPos.z);
+          float fbmMacro = fbm(cylUV * 0.032);
+          float fbmMid = fbm(cylUV * 0.16);
+          float microFade = 1.0 - smoothstep(18.0, 110.0, dist);
+          float microGrass = vnoise(cylUV * 2.6) * microFade;
+
+          // Base lush meadow grass
+          vec3 grassDark = vec3(0.11, 0.32, 0.10);
+          vec3 grassMid  = vec3(0.22, 0.48, 0.15);
+          vec3 grassSun  = vec3(0.38, 0.60, 0.19);
+          vec3 landColor = mix(grassDark, grassMid, fbmMacro);
+          landColor = mix(landColor, grassSun, smoothstep(0.45, 0.80, fbmMid) * 0.55);
+          landColor *= (0.90 + 0.20 * microGrass);
+
+          float sector = round(theta / 1.5707963) * 1.5707963;
+          float dTheta = theta - sector;
+          float absDTheta = abs(dTheta);
+          float sideMask = smoothstep(0.14, 0.19, absDTheta) * (1.0 - smoothstep(0.32, 0.36, absDTheta));
+
+          // Voronoi + FBM agricultural patches (Golden Wheat & Brown Plowed Farmland)
+          vec2 vor = voronoi2(cylUV * 0.028 + vec2(fbmMacro * 0.6));
+          float fieldPatch = sideMask * (1.0 - smoothstep(0.05, 0.25, riverMask));
+          float terraceZone = smoothstep(0.28, 0.42, sin(vWorldPos.z * 0.018 + sector * 2.0)) * fieldPatch;
+
+          if (fieldPatch > 0.05 && terraceZone < 0.5) {
+            if (vor.x > 0.62) {
+              // Golden wheat field with animated wind ripples
+              float wRipple = vnoise(cylUV * 1.4 + vec2(uTime * 0.5, uTime * 0.35));
+              vec3 wheatCol = mix(vec3(0.72, 0.54, 0.14), vec3(0.95, 0.78, 0.24), wRipple);
+              landColor = mix(landColor, wheatCol, fieldPatch * 0.90);
+            } else if (vor.x < 0.28) {
+              // Brown plowed farmland with furrow stripes
+              float furrow = 0.5 + 0.5 * sin(cylUV.y * 2.2 + fbmMid * 2.0);
+              vec3 soilCol = mix(vec3(0.26, 0.17, 0.10), vec3(0.40, 0.28, 0.18), furrow);
+              landColor = mix(landColor, soilCol, fieldPatch * 0.86);
+            }
+          }
+
+          // Terraced Rice Paddies (contour water pads reflecting sun & sky)
+          float flatPad = smoothstep(0.91, 0.985, dot(N, inward));
+          if (terraceZone > 0.05) {
+            float rWave = sin(cylUV.x * 1.5 + uTime * 1.2) * cos(cylUV.y * 1.3 - uTime * 0.9);
+            vec3 paddyN = normalize(N + vec3(rWave * 0.022, 0.0, rWave * 0.022));
+            vec3 H = normalize(SUN_DIR + V);
+            float pSpec = pow(max(dot(paddyN, H), 0.0), 80.0);
+            float pFres = pow(1.0 - max(dot(paddyN, V), 0.0), 3.0);
+            vec3 skyRefl = mix(vec3(0.48, 0.74, 0.98), vec3(0.06, 0.09, 0.20), uNight);
+            skyRefl = mix(skyRefl, vec3(0.92, 0.50, 0.34), uDusk * 0.75);
+            vec3 paddyWater = mix(vec3(0.08, 0.22, 0.26), skyRefl, pFres * 0.85)
+                            + getDirectLightColor() * pSpec * 1.45 * (1.0 - uNight * 0.7);
+            landColor = mix(landColor, paddyWater, terraceZone * flatPad * 0.92);
+          }
+
+          // Dirt path
+          float pathDist = abs(dTheta - (-0.06 + 0.015 * sin(vWorldPos.z * 0.02)));
+          float pathMask = 1.0 - smoothstep(0.012, 0.024, pathDist);
+          landColor = mix(landColor, vec3(0.58, 0.51, 0.39), pathMask * 0.78);
+
+          // Sandy/earthy sloped riverbanks + dark teal reflective river water
+          float bankMask = smoothstep(0.01, 0.25, riverMask) * (1.0 - smoothstep(0.25, 0.55, riverMask));
+          landColor = mix(landColor, vec3(0.56, 0.46, 0.34) * (0.9 + 0.2 * fbmMid), bankMask * 0.92);
+
+          if (riverMask > 0.15) {
+            float w1 = sin(cylUV.y * 1.15 - uTime * 1.9 + cylUV.x * 0.35);
+            float w2 = cos(cylUV.x * 2.1 + uTime * 1.5 - cylUV.y * 0.7);
+            float w3 = vnoise(cylUV * 2.6 + vec2(0.0, -uTime * 1.6)) * 2.0 - 1.0;
+            vec3 waterN = normalize(N + vec3((w1 * 0.45 + w3 * 0.55) * 0.065, 0.0, (w2 * 0.45 + w3 * 0.55) * 0.065));
+            vec3 H = normalize(SUN_DIR + V);
+            float spec = pow(max(dot(waterN, H), 0.0), 110.0);
+            float fresnel = pow(1.0 - max(dot(waterN, V), 0.0), 3.0);
+            vec3 skyRefl = mix(vec3(0.42, 0.68, 0.92), vec3(0.04, 0.07, 0.16), uNight);
+            skyRefl = mix(skyRefl, vec3(0.94, 0.48, 0.32), uDusk * 0.78);
+            vec3 waterBase = mix(vec3(0.03, 0.14, 0.20), skyRefl, fresnel * 0.78)
+                           + getDirectLightColor() * spec * 2.25 * (1.0 - uNight * 0.65);
+            landColor = mix(landColor, waterBase, smoothstep(0.15, 0.58, riverMask));
+          }
+
+          // PCF Shadow + Lighting
+          float shadow = calcShadowPCF(vWorldPos, N);
+          float sunDiff = max(dot(N, SUN_DIR), 0.0) * shadow;
+          float axisDiff = max(dot(N, inward), 0.0);
+          float hemi = 0.5 + 0.5 * dot(N, vec3(0.0, 1.0, 0.0));
+
+          vec3 ambient = mix(vec3(0.24, 0.32, 0.30), vec3(0.50, 0.68, 0.88), hemi) * 0.50 * getAmbientTint();
+          vec3 direct = getDirectLightColor() * (sunDiff * 0.78 + axisDiff * 0.22);
+          vec3 litLand = landColor * (ambient + direct);
+
+          // Night Village Warm Pool Lighting on ground around village clusters
+          float nightGlowAmt = max(uNight, uDusk * 0.5);
+          if (nightGlowAmt > 0.05) {
+            float vGlow = 0.0;
+            vGlow += exp(-dot(vec2((theta - (-1.7108)) * 100.0, vWorldPos.z + 180.0), vec2((theta - (-1.7108)) * 100.0, vWorldPos.z + 180.0)) * 0.0028);
+            vGlow += exp(-dot(vec2((theta - (-1.4608)) * 100.0, vWorldPos.z +  90.0), vec2((theta - (-1.4608)) * 100.0, vWorldPos.z +  90.0)) * 0.0028);
+            vGlow += exp(-dot(vec2((theta - (-1.7008)) * 100.0, vWorldPos.z -  30.0), vec2((theta - (-1.7008)) * 100.0, vWorldPos.z -  30.0)) * 0.0028);
+            vGlow += exp(-dot(vec2((theta - (-1.4608)) * 100.0, vWorldPos.z - 140.0), vec2((theta - (-1.4608)) * 100.0, vWorldPos.z - 140.0)) * 0.0028);
+            litLand += landColor * vec3(1.15, 0.78, 0.32) * vGlow * nightGlowAmt * 0.85;
+          }
+
+          // Sky / Window Strips
+          if (windowMask > 0.01) {
+            float skyGrad = 0.5 + 0.5 * sin(theta * 2.0 + 0.6);
+            vec3 dayWin = mix(vec3(0.56, 0.80, 0.99), vec3(0.86, 0.95, 1.0), skyGrad);
+            vec3 duskWin = mix(vec3(0.92, 0.48, 0.34), vec3(0.55, 0.36, 0.58), skyGrad);
+            vec3 nightWin = vec3(0.02, 0.03, 0.08);
+            float starH = hash21(floor(cylUV * 0.65));
+            if (starH > 0.982) nightWin += vec3(0.9, 0.94, 1.0) * (starH - 0.982) * 55.0;
+            vec3 winColor = mix(mix(dayWin, nightWin, uNight), duskWin, uDusk * 0.85);
+
+            float gridZ = abs(fract(vWorldPos.z * 0.025) - 0.5);
+            float gridT = abs(fract(theta * 12.0 / 3.14159) - 0.5);
+            float frame = 1.0 - smoothstep(0.02, 0.05, min(gridZ, gridT));
+            winColor = mix(winColor, vec3(0.22, 0.28, 0.36) * (1.0 - uNight * 0.5), frame * 0.45);
+            litLand = mix(litLand, winColor, windowMask);
+          }
+
+          fragColor = vec4(applyAtmosphericHDR(litLand, dist, vWorldPos), 1.0);
+        }
+      `;
+
+      // =========================================================================
+      // 2. Aqueduct Colonnade Shader (Sandstone FBM + Mortar Brick Grid + Crevice AO + PCF Shadow)
+      // =========================================================================
+      const archVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec3 aPos;
+        layout(location = 1) in vec3 aNormal;
+        layout(location = 2) in vec3 aInstData;
+        uniform mat4 uViewProj;
+        out vec3 vWorldPos;
+        out vec3 vNormal;
+        out vec3 vLocalPos;
+        out float vArchAO;
+        void main() {
+          float theta = aInstData.x + aPos.x * aInstData.z;
+          float r = 100.0 - aPos.y;
+          float cosT = cos(theta), sinT = sin(theta);
+          vec3 worldPos = vec3(r * cosT, r * sinT, aInstData.y + aPos.z);
+          vec3 tangent = vec3(-sinT, cosT, 0.0);
+          vec3 inward  = vec3(-cosT, -sinT, 0.0);
+          vec3 worldNormal = normalize(tangent * aNormal.x + inward * aNormal.y + vec3(0.0, 0.0, aNormal.z));
+          vWorldPos = worldPos;
+          vNormal = worldNormal;
+          vLocalPos = vec3(theta * 100.0, aPos.y, aPos.z);
+          // Corner & soffit AO baked from height & arch curvature
+          float baseAO = smoothstep(-0.5, 2.2, aPos.y);
+          float corniceAO = 1.0 - 0.28 * smoothstep(19.2, 20.6, aPos.y) * (1.0 - step(20.7, aPos.y));
+          vArchAO = mix(0.62, 1.0, baseAO) * corniceAO;
+          gl_Position = uViewProj * vec4(worldPos, 1.0);
+        }
+      `;
+
+      const archFS = `#version 300 es
+        precision highp float;
+        in vec3 vWorldPos;
+        in vec3 vNormal;
+        in vec3 vLocalPos;
+        in float vArchAO;
+        uniform vec3 uCamPos;
+        out vec4 fragColor;
+        ${COMMON_GLSL}
+
+        float hash21(vec2 p) {
+          p = fract(p * vec2(127.1, 311.7));
+          p += dot(p, p + 34.23);
+          return fract(p.x * p.y);
+        }
+        float vnoise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
+                     mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+        }
+
+        void main() {
+          vec3 N = normalize(vNormal);
+          float dist = length(uCamPos - vWorldPos);
+          vec3 inward = normalize(vec3(-vWorldPos.x, -vWorldPos.y, 0.0));
+
+          // Detailed Sandstone FBM + Staggered Ashlar Brick Mortar Grid
+          vec2 stoneUV = vec2(vLocalPos.x + vLocalPos.z * 0.5, vLocalPos.y);
+          float row = floor(stoneUV.y * 0.75);
+          float blockY = abs(fract(stoneUV.y * 0.75) - 0.5);
+          float blockX = abs(fract(stoneUV.x * 0.38 + mod(row, 2.0) * 0.5) - 0.5);
+          float mortar = 1.0 - smoothstep(0.018, 0.045, min(blockX, blockY));
+
+          float blockTint = hash21(vec2(floor(stoneUV.x * 0.38 + mod(row, 2.0) * 0.5), row));
+          float grain = vnoise(stoneUV * 2.2) * 0.65 + vnoise(stoneUV * 7.5) * 0.35;
+
+          vec3 sandstone = mix(vec3(0.84, 0.77, 0.64), vec3(0.95, 0.89, 0.76), grain * 0.7 + blockTint * 0.3);
+          sandstone = mix(sandstone, vec3(0.52, 0.47, 0.40), mortar * 0.52);
+
+          // Micro bump normal from mortar + sandstone grain
+          vec3 bumpN = normalize(N + vec3((grain - 0.5) * 0.08, mortar * 0.06, (grain - 0.5) * 0.08));
+          float shadow = calcShadowPCF(vWorldPos, bumpN);
+          float sunDiff = max(dot(bumpN, SUN_DIR), 0.0) * shadow;
+          float axisDiff = max(dot(bumpN, inward), 0.0);
+          float hemi = 0.5 + 0.5 * dot(bumpN, vec3(0.0, 1.0, 0.0));
+
+          vec3 ambient = mix(vec3(0.32, 0.36, 0.42), vec3(0.58, 0.70, 0.84), hemi) * 0.54 * vArchAO * getAmbientTint();
+          vec3 direct = getDirectLightColor() * (sunDiff * 0.75 + axisDiff * 0.20);
+          vec3 lit = sandstone * (ambient + direct);
+
+          fragColor = vec4(applyAtmosphericHDR(lit, dist, vWorldPos), 1.0);
+        }
+      `;
+
+      // =========================================================================
+      // 3. Instanced Grass Shader (36k Blades + Simplex Wind + Gradient + PCF Shadow)
+      // =========================================================================
+      const grassVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec3 aPos;
+        layout(location = 1) in vec2 aInstUV;
+        layout(location = 2) in vec4 aInstSeed;
+        uniform mat4 uViewProj;
+        uniform vec3 uCamPos;
+        uniform float uCamTheta;
+        uniform float uCamZ;
+        uniform float uTime;
+        out vec3 vWorldPos;
+        out vec3 vNormal;
+        out float vHeight;
+        out float vTint;
+        out float vWind;
+
+        const float PATCH_ARC = 0.72;
+        const float PATCH_Z   = 76.0;
+
+        vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+        vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+        vec3 permute(vec3 x) { return mod289(((x * 34.0) + 1.0) * x); }
+        float snoise(vec2 v) {
+          const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+          vec2 i = floor(v + dot(v, C.yy));
+          vec2 x0 = v - i + dot(i, C.xx);
+          vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+          vec4 x12 = x0.xyxy + C.xxzz; x12.xy -= i1; i = mod289(i);
+          vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
+          vec3 m = max(0.5 - vec3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
+          m = m * m; m = m * m;
+          vec3 x = 2.0 * fract(p * C.www) - 1.0;
+          vec3 h = abs(x) - 0.5; vec3 ox = floor(x + 0.5); vec3 a0 = x - ox;
+          m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+          vec3 g; g.x = a0.x * x0.x + h.x * x0.y; g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+          return 130.0 * dot(m, g);
+        }
+
+        float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+        float vnoise2(vec2 p) {
+          vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash2(i), hash2(i + vec2(1.0, 0.0)), u.x),
+                     mix(hash2(i + vec2(0.0, 1.0)), hash2(i + vec2(1.0, 1.0)), u.x), u.y);
+        }
+
+        float getTerrainH(float theta, float z, out float windowMask, out float riverMask, out float pathMask) {
+          windowMask = 0.0;
+          float sector = round(theta / 1.5707963) * 1.5707963;
+          float dTheta = theta - sector;
+          float riverCenter = 0.16 + 0.045 * sin(z * 0.025) + 0.02 * cos(z * 0.055);
+          riverMask = 1.0 - smoothstep(0.022, 0.048, abs(dTheta - riverCenter));
+          pathMask = 1.0 - smoothstep(0.012, 0.024, abs(dTheta - (-0.06 + 0.015 * sin(z * 0.02))));
+          float lawnFlat = smoothstep(0.08, 0.22, abs(dTheta));
+          float n1 = vnoise2(vec2(theta * 4.5 + 3.1, z * 0.015));
+          float n2 = vnoise2(vec2(theta * 10.0 + 7.4, z * 0.035));
+          float h = (n1 * 5.2 + n2 * 1.8 - 1.5) * lawnFlat + 0.35 * sin(z * 0.02) * cos(theta * 8.0);
+          h = mix(h, -1.6, riverMask);
+          float tZone = smoothstep(0.28, 0.42, sin(z * 0.018 + sector * 2.0))
+                      * smoothstep(0.14, 0.19, abs(dTheta)) * (1.0 - smoothstep(0.32, 0.36, abs(dTheta))) * (1.0 - riverMask);
+          if (tZone > 0.01) {
+            float st = floor(h / 0.85) * 0.85 + smoothstep(0.72, 0.98, fract(h / 0.85)) * 0.85;
+            h = mix(h, st, tZone);
+          }
+          return mix(h, -0.4, windowMask);
+        }
+
+        void main() {
+          float theta = uCamTheta + (fract(aInstUV.x - uCamTheta / PATCH_ARC + 0.5) - 0.5) * PATCH_ARC;
+          float z     = uCamZ     + (fract(aInstUV.y - uCamZ     / PATCH_Z   + 0.5) - 0.5) * PATCH_Z;
+
+          float windowMask, riverMask, pathMask;
+          float h = getTerrainH(theta, z, windowMask, riverMask, pathMask);
+          float r = 100.0 - h;
+          float cosT = cos(theta), sinT = sin(theta);
+          vec3 basePos = vec3(r * cosT, r * sinT, z);
+
+          float dist = length(basePos - uCamPos);
+          float radiusFade = 1.0 - smoothstep(26.0, 37.0, dist);
+          float validMask = (1.0 - smoothstep(0.05, 0.25, windowMask))
+                          * (1.0 - smoothstep(0.05, 0.25, riverMask))
+                          * (1.0 - smoothstep(0.25, 0.55, pathMask)) * radiusFade;
+
+          vec3 up = vec3(-cosT, -sinT, 0.0);
+          vec3 tangent = vec3(-sinT, cosT, 0.0);
+          vec3 axial = vec3(0.0, 0.0, 1.0);
+          float ca = cos(aInstSeed.x), sa = sin(aInstSeed.x);
+          vec3 bladeX = tangent * ca + axial * sa;
+          vec3 bladeZ = -tangent * sa + axial * ca;
+
+          float bladeH = aInstSeed.y * validMask;
+          float bladeW = aInstSeed.z * validMask;
+
+          float w1 = snoise(vec2(theta * 14.0 - uTime * 0.45, z * 0.14 - uTime * 0.65));
+          float w2 = snoise(vec2(theta * 32.0 - uTime * 0.90, z * 0.32 - uTime * 1.15));
+          float wind = w1 * 0.72 + w2 * 0.28;
+          float bend = aPos.y * aPos.y;
+
+          vec3 worldPos = basePos
+                        + bladeX * (aPos.x * bladeW)
+                        + up * (aPos.y * bladeH - abs(wind * 0.38 + 0.12) * 0.22 * bend * bladeH)
+                        + bladeZ * (aPos.z * bladeH)
+                        + (tangent * 0.55 + axial * 0.85) * (wind * 0.38 + 0.12) * bend * bladeH;
+
+          vWorldPos = worldPos;
+          vNormal = up;
+          vHeight = aPos.y;
+          vTint = aInstSeed.w;
+          vWind = wind;
+          gl_Position = uViewProj * vec4(worldPos, 1.0);
+        }
+      `;
+
+      const grassFS = `#version 300 es
+        precision highp float;
+        in vec3 vWorldPos;
+        in vec3 vNormal;
+        in float vHeight;
+        in float vTint;
+        in float vWind;
+        uniform vec3 uCamPos;
+        out vec4 fragColor;
+        ${COMMON_GLSL}
+        void main() {
+          float dist = length(uCamPos - vWorldPos);
+          vec3 rootCol = vec3(0.08, 0.24, 0.07);
+          vec3 midCol  = vec3(0.22, 0.50, 0.14);
+          vec3 tipCol  = mix(vec3(0.45, 0.74, 0.22), vec3(0.62, 0.82, 0.26), vTint);
+          vec3 col = mix(rootCol, midCol, smoothstep(0.0, 0.55, vHeight));
+          col = mix(col, tipCol, smoothstep(0.45, 1.0, vHeight));
+          if (vTint > 0.93 && vHeight > 0.72) {
+            vec3 flowerCol = (vTint > 0.97) ? vec3(1.0, 0.96, 0.85) : (vTint > 0.95 ? vec3(0.95, 0.35, 0.35) : vec3(0.98, 0.82, 0.25));
+            col = mix(col, flowerCol, smoothstep(0.72, 0.92, vHeight));
+          }
+
+          float shadow = calcShadowPCF(vWorldPos, vNormal);
+          float litFactor = (0.42 + 0.58 * shadow) * (0.94 + 0.18 * max(vWind, 0.0) * vHeight);
+          col *= litFactor * getAmbientTint() * mix(vec3(1.0), vec3(1.18, 0.82, 0.62), uDusk * 0.65);
+
+          fragColor = vec4(applyAtmosphericHDR(col, dist, vWorldPos), 1.0);
+        }
+      `;
+
+      // =========================================================================
+      // 4. Instanced Leaf / Blossom Cluster Quads (Volumetric Tree Canopies + AO + Shadows)
+      // =========================================================================
+      const leafVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec2 aQuad;     // [-1, 1]
+        layout(location = 1) in vec3 aInstPos;
+        layout(location = 2) in vec4 aInstMeta; // x: size, y: crownAO, z: type (0:sakura, 1:poplar, 2:maple), w: seed
+
+        uniform mat4 uViewProj;
+        uniform vec3 uCamPos;
+        uniform float uTime;
+
+        out vec3 vWorldPos;
+        out vec2 vUV;
+        out vec4 vMeta;
+        out vec3 vNormal;
+
+        void main() {
+          vec3 toCam = normalize(uCamPos - aInstPos);
+          vec3 worldUp = normalize(vec3(-aInstPos.x, -aInstPos.y, 0.0));
+          vec3 right = normalize(cross(worldUp, toCam));
+          vec3 up = cross(toCam, right);
+
+          // Rotate quad randomly around view axis + gentle wind flutter
+          float ang = aInstMeta.w * 6.283185 + sin(uTime * 1.4 + aInstMeta.w * 18.0 + aInstPos.z * 0.2) * 0.14;
+          float ca = cos(ang), sa = sin(ang);
+          vec2 rq = vec2(ca * aQuad.x - sa * aQuad.y, sa * aQuad.x + ca * aQuad.y);
+          vec3 offset = (right * rq.x + up * rq.y) * aInstMeta.x;
+          vec3 worldPos = aInstPos + offset;
+
+          vWorldPos = worldPos;
+          vUV = aQuad * 0.5 + 0.5;
+          vMeta = aInstMeta;
+          // Outward-facing normal approximation for crown lighting
+          vNormal = normalize(mix(toCam, worldUp, 0.35) + right * rq.x * 0.4 + up * rq.y * 0.4);
+          gl_Position = uViewProj * vec4(worldPos, 1.0);
+        }
+      `;
+
+      const leafFS = `#version 300 es
+        precision highp float;
+        in vec3 vWorldPos;
+        in vec2 vUV;
+        in vec4 vMeta;
+        in vec3 vNormal;
+        uniform vec3 uCamPos;
+        uniform sampler2D uLeafAtlas;
+        out vec4 fragColor;
+        ${COMMON_GLSL}
+
+        void main() {
+          float tType = vMeta.z;
+          vec2 atlasUV = vec2(vUV.x * 0.5 + (tType < 0.5 ? 0.0 : 0.5), vUV.y);
+          vec4 tex = texture(uLeafAtlas, atlasUV);
+          if (tex.a < 0.32) discard;
+
+          float dist = length(uCamPos - vWorldPos);
+          vec3 N = normalize(vNormal);
+          vec3 V = normalize(uCamPos - vWorldPos);
+          float crownAO = vMeta.y;
+          float seed = vMeta.w;
+
+          vec3 baseCol;
+          if (tType < 0.5) {
+            // Sakura: Canvas2D-drawn individual pink/white petals modulated by per-cluster tint
+            baseCol = tex.rgb * mix(vec3(1.0, 0.88, 0.93), vec3(1.0, 0.98, 1.0), seed);
+          } else if (tType < 1.5) {
+            // Poplar: rich deep-to-olive green leaves
+            baseCol = tex.rgb * mix(vec3(0.45, 0.72, 0.38), vec3(0.75, 0.96, 0.52), seed);
+          } else {
+            // Autumn Maple: vibrant orange, crimson, amber
+            float lum = dot(tex.rgb, vec3(0.3, 0.6, 0.1));
+            baseCol = mix(vec3(0.82, 0.22, 0.06), vec3(1.0, 0.68, 0.16), clamp(lum * 1.4, 0.0, 1.0))
+                    * mix(vec3(0.9, 0.8, 0.8), vec3(1.1, 1.0, 0.9), seed);
+          }
+
+          float shadow = calcShadowPCF(vWorldPos, N);
+          float sunDiff = max(dot(N, SUN_DIR), 0.0) * shadow;
+          float backLight = pow(max(dot(-V, SUN_DIR), 0.0), 3.0) * crownAO;
+
+          vec3 ambient = vec3(0.44, 0.50, 0.56) * crownAO * getAmbientTint();
+          vec3 direct = getDirectLightColor() * (sunDiff * 0.78 * crownAO + backLight * 0.32);
+          vec3 lit = baseCol * (ambient + direct);
+
+          fragColor = vec4(applyAtmosphericHDR(lit, dist, vWorldPos), 1.0);
+        }
+      `;
+
+      // =========================================================================
+      // 5. Vertex-Colored Instanced Props (Trunks, Obelisk, Cottages with Night Glow)
+      // =========================================================================
+      const vcolVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec3 aPos;
+        layout(location = 1) in vec3 aNormal;
+        layout(location = 2) in vec3 aVertColor;
+        layout(location = 3) in vec3 aInstPos;
+        layout(location = 4) in vec3 aInstUp;
+        layout(location = 5) in vec3 aInstMeta;
+        uniform mat4 uViewProj;
+        out vec3 vWorldPos;
+        out vec3 vNormal;
+        out vec3 vColor;
+        void main() {
+          vec3 up = normalize(aInstUp);
+          vec3 axial = vec3(0.0, 0.0, 1.0);
+          vec3 right = normalize(cross(up, axial));
+          axial = cross(right, up);
+          float ca = cos(aInstMeta.x), sa = sin(aInstMeta.x);
+          vec3 rx = right * ca + axial * sa;
+          vec3 rz = -right * sa + axial * ca;
+          vec3 local = aPos * aInstMeta.y;
+          vec3 worldPos = aInstPos + rx * local.x + up * local.y + rz * local.z;
+          vWorldPos = worldPos;
+          vNormal = normalize(rx * aNormal.x + up * aNormal.y + rz * aNormal.z);
+          vColor = aVertColor;
+          gl_Position = uViewProj * vec4(worldPos, 1.0);
+        }
+      `;
+
+      const vcolFS = `#version 300 es
+        precision highp float;
+        in vec3 vWorldPos;
+        in vec3 vNormal;
+        in vec3 vColor;
+        uniform vec3 uCamPos;
+        out vec4 fragColor;
+        ${COMMON_GLSL}
+        void main() {
+          vec3 N = normalize(vNormal);
+          float dist = length(uCamPos - vWorldPos);
+          vec3 inward = normalize(vec3(-vWorldPos.x, -vWorldPos.y, 0.0));
+          float isEmissive = step(1.12, vColor.r);
+
+          float shadow = calcShadowPCF(vWorldPos, N);
+          float sunDiff = max(dot(N, SUN_DIR), 0.0) * shadow;
+          float axisDiff = max(dot(N, inward), 0.0);
+
+          vec3 ambient = vec3(0.36, 0.42, 0.48) * 0.62 * getAmbientTint();
+          vec3 direct = getDirectLightColor() * (sunDiff * 0.72 + axisDiff * 0.22);
+          vec3 lit = vColor * (ambient + direct);
+
+          if (isEmissive > 0.5) {
+            lit = vColor * (0.45 + 2.8 * max(uNight, uDusk * 0.75));
+          }
+          fragColor = vec4(applyAtmosphericHDR(lit, dist, vWorldPos), 1.0);
+        }
+      `;
+
+      // =========================================================================
+      // 6. Clouds, Endcaps, Storks, Petals/Fireflies
+      // =========================================================================
+      const cloudVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec2 aQuad;      // [-1, 1]
+        layout(location = 1) in vec3 aInstPos;
+        layout(location = 2) in vec3 aInstMeta;  // x: size, y: driftSpeed, z: shadeTint
+        uniform mat4 uViewProj;
+        uniform vec3 uCamPos;
+        uniform float uTime;
+        out vec3 vWorldPos;
+        out vec2 vUV;
+        out float vShade;
+        void main() {
+          vec3 center = aInstPos;
+          center.z = mod(center.z + uTime * aInstMeta.y + 390.0, 780.0) - 390.0;
+          vec3 toCam = normalize(uCamPos - center);
+          vec3 worldUp = vec3(0.0, 1.0, 0.0);
+          if (abs(dot(toCam, worldUp)) > 0.96) worldUp = vec3(0.0, 0.0, 1.0);
+          vec3 right = normalize(cross(worldUp, toCam));
+          vec3 up = cross(toCam, right);
+          vec3 worldPos = center + (right * aQuad.x * 1.35 + up * aQuad.y * 0.85) * aInstMeta.x;
+          vWorldPos = worldPos;
+          vUV = aQuad * 0.5 + 0.5;
+          vShade = aInstMeta.z;
+          gl_Position = uViewProj * vec4(worldPos, 1.0);
+        }
+      `;
+
+      const cloudFS = `#version 300 es
+        precision highp float;
+        in vec3 vWorldPos;
+        in vec2 vUV;
+        in float vShade;
+        uniform vec3 uCamPos;
+        uniform sampler2D uCloudTex;
+        out vec4 fragColor;
+        ${COMMON_GLSL}
+        void main() {
+          vec4 tex = texture(uCloudTex, vUV);
+          float alpha = tex.a * 0.52;
+          if (alpha < 0.02) discard;
+          float dist = length(uCamPos - vWorldPos);
+          float topGrad = smoothstep(0.15, 0.85, vUV.y);
+          vec3 lit = mix(vec3(0.74, 0.82, 0.94), vec3(1.12, 1.08, 1.02), topGrad * vShade)
+                   * mix(vec3(1.0), vec3(0.14, 0.20, 0.34), uNight)
+                   * mix(vec3(1.0), vec3(1.25, 0.68, 0.45), uDusk * 0.80);
+          fragColor = vec4(applyAtmosphericHDR(lit, dist, vWorldPos), alpha * (1.0 - uNight * 0.55));
+        }
+      `;
+
+      const endcapVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec3 aPos;
+        layout(location = 1) in vec3 aNormal;
+        uniform mat4 uViewProj;
+        out vec3 vWorldPos;
+        out vec3 vNormal;
+        void main() {
+          vWorldPos = aPos; vNormal = aNormal;
+          gl_Position = uViewProj * vec4(aPos, 1.0);
+        }
+      `;
+
+      const endcapFS = `#version 300 es
+        precision highp float;
+        in vec3 vWorldPos;
+        in vec3 vNormal;
+        uniform vec3 uCamPos;
+        out vec4 fragColor;
+        ${COMMON_GLSL}
+        float hash21(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
+        }
+        vec3 renderSpaceAndSaturn(vec3 rd) {
+          vec3 col = vec3(0.012, 0.018, 0.048);
+          float mw = exp(-pow((rd.y * 0.8 + rd.x * 0.55 + 0.08) * 3.8, 2.0));
+          col += vec3(0.11, 0.15, 0.28) * mw;
+          vec2 starUV = rd.xy / max(0.25, abs(rd.z)) * 110.0;
+          vec2 sid = floor(starUV), sf = fract(starUV) - 0.5;
+          float h = hash21(sid);
+          if (h > 0.94) {
+            float d = length(sf - (vec2(h, fract(h * 17.3)) - 0.5) * 0.6);
+            float star = smoothstep(0.18, 0.01, d) * (0.7 + 0.9 * fract(h * 53.1));
+            col += mix(vec3(0.85, 0.92, 1.0), vec3(1.0, 0.88, 0.72), fract(h * 31.7)) * star;
+          }
+          vec3 satCenter = normalize(vec3(0.08, 0.35, -1.0)) * 12.0;
+          float satR = 1.95;
+          float b = dot(-satCenter, rd), c = dot(-satCenter, -satCenter) - satR * satR;
+          float disc = b * b - c, tSphere = 1e9;
+          vec3 sphereCol = vec3(0.0);
+          if (disc > 0.0) {
+            tSphere = -b - sqrt(disc);
+            if (tSphere > 0.0) {
+              vec3 n = normalize(rd * tSphere - satCenter);
+              float bands = 0.5 + 0.5 * sin(n.y * 18.0 + sin(n.y * 6.0) * 1.5);
+              vec3 satMat = mix(vec3(0.82, 0.70, 0.50), vec3(0.95, 0.87, 0.68), bands);
+              float lit = max(dot(n, normalize(vec3(0.65, 0.55, 0.5))), 0.04);
+              sphereCol = satMat * (lit * 1.25 + 0.06);
+            }
+          }
+          vec3 ringN = normalize(vec3(-0.22, 0.92, 0.32));
+          float denom = dot(rd, ringN);
+          if (abs(denom) > 0.001) {
+            float tRing = dot(satCenter, ringN) / denom;
+            if (tRing > 0.0 && tRing < tSphere) {
+              float distR = length(rd * tRing - satCenter);
+              if (distR > satR * 1.32 && distR < satR * 2.55) {
+                float u = (distR - satR * 1.32) / (satR * 1.23);
+                float cassini = smoothstep(0.03, 0.07, abs(u - 0.62));
+                vec3 ringCol = mix(vec3(0.68, 0.62, 0.52), vec3(1.10, 1.00, 0.84), 0.65 + 0.35 * sin(u * 48.0)) * cassini;
+                col = mix(col, ringCol, (0.45 + 0.45 * sin(u * 3.14159)) * cassini);
+              }
+            }
+          }
+          if (tSphere < 1e8) col = sphereCol;
+          return col;
+        }
+        void main() {
+          float dist = length(uCamPos - vWorldPos);
+          float r = length(vWorldPos.xy) / 100.0;
+          float ang = atan(vWorldPos.y, vWorldPos.x);
+          float ring = smoothstep(0.03, 0.06, abs(fract(r * 7.0) - 0.5));
+          float spoke = smoothstep(0.02, 0.05, abs(fract(ang * 16.0 / 6.2831853) - 0.5));
+          float glassMask = ring * mix(1.0, spoke, smoothstep(0.08, 0.25, r));
+
+          if (vWorldPos.z > 0.0) {
+            float hubGlow = exp(-r * r * 4.5);
+            float rays = 0.78 + 0.22 * sin(ang * 12.0);
+            vec3 sunCore = mix(vec3(3.4, 2.7, 1.6), vec3(3.0, 1.3, 0.5), uDusk) * (1.0 - uNight * 0.90);
+            vec3 mirrorCol = mix(vec3(0.75, 0.86, 0.98) * getAmbientTint(), sunCore * rays, hubGlow);
+            vec3 base = mix(vec3(0.45, 0.48, 0.52) * getAmbientTint(), mirrorCol, glassMask);
+            fragColor = vec4(applyAtmosphericHDR(base, dist, vWorldPos), 1.0);
+          } else {
+            vec3 rd = normalize(vWorldPos - uCamPos);
+            vec3 spaceCol = renderSpaceAndSaturn(rd) * (1.05 + uNight * 0.75);
+            vec3 base = mix(vec3(0.18, 0.22, 0.28) * (1.0 - uNight * 0.45), spaceCol, glassMask);
+            fragColor = vec4(mix(base, getSkyFogColor() * 0.65, mix(0.20, 0.03, uNight)), 1.0);
+          }
+        }
+      `;
+
+      const storkVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec3 aPos;
+        layout(location = 1) in vec3 aNormal;
+        layout(location = 2) in vec3 aVertColor;
+        layout(location = 3) in float aWingMask;
+        layout(location = 4) in vec3 aInstPos;
+        layout(location = 5) in vec3 aInstFwd;
+        layout(location = 6) in vec3 aInstUp;
+        layout(location = 7) in float aInstPhase;
+        uniform mat4 uViewProj;
+        uniform float uTime;
+        out vec3 vWorldPos;
+        out vec3 vNormal;
+        out vec3 vColor;
+        void main() {
+          vec3 fwd = normalize(aInstFwd), up = normalize(aInstUp);
+          vec3 right = normalize(cross(fwd, up)); up = cross(right, fwd);
+          vec3 p = aPos;
+          float flapPhase = uTime * 6.2 + aInstPhase;
+          float glideEnv = 0.25 + 0.75 * smoothstep(-0.3, 0.45, sin(uTime * 0.55 + aInstPhase * 0.45));
+          if (aWingMask > 0.01) {
+            // Traveling wave along wingspan: inner wing leads, outer primary feathers trail
+            float wave = sin(flapPhase - aWingMask * 1.15) * glideEnv;
+            p.y += wave * 0.68 * aWingMask + (1.0 - glideEnv) * 0.14 * aWingMask;
+            p.x *= (1.0 - 0.14 * wave * wave * aWingMask);
+          } else {
+            // Subtle body counter-bob
+            p.y -= sin(flapPhase) * 0.06 * glideEnv;
+          }
+          vWorldPos = aInstPos + right * p.x + up * p.y + fwd * p.z;
+          vNormal = normalize(right * aNormal.x + up * aNormal.y + fwd * aNormal.z);
+          vColor = aVertColor;
+          gl_Position = uViewProj * vec4(vWorldPos, 1.0);
+        }
+      `;
+
+      const storkFS = `#version 300 es
+        precision highp float;
+        in vec3 vWorldPos;
+        in vec3 vNormal;
+        in vec3 vColor;
+        uniform vec3 uCamPos;
+        out vec4 fragColor;
+        ${COMMON_GLSL}
+        void main() {
+          vec3 N = normalize(vNormal);
+          float dist = length(uCamPos - vWorldPos);
+          float sunDiff = max(dot(N, SUN_DIR), 0.0);
+          vec3 lit = vColor * (vec3(0.45, 0.52, 0.62) * getAmbientTint() + getDirectLightColor() * sunDiff * 0.72);
+          fragColor = vec4(applyAtmosphericHDR(lit, dist, vWorldPos), 1.0);
+        }
+      `;
+
+      const petalVS = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec4 aSeed;
+        uniform mat4 uViewProj;
+        uniform vec3 uCamPos;
+        uniform float uTime;
+        out float vPhase;
+        out float vAlpha;
+        void main() {
+          const float BOX = 72.0;
+          float speed = 0.7 + fract(aSeed.w * 7.13) * 0.8;
+          vec3 drift = vec3(sin(uTime * 0.55 + aSeed.w * 20.0) * 2.5 + uTime * 0.85, -uTime * speed, cos(uTime * 0.45 + aSeed.w * 17.0) * 2.5 + uTime * 1.1);
+          vec3 rel = (fract(aSeed.xyz + drift / BOX - uCamPos / BOX + 0.5) - 0.5) * BOX;
+          vec3 worldPos = uCamPos + rel;
+          float dist = length(rel);
+          float fade = (1.0 - smoothstep(24.0, 36.0, dist)) * smoothstep(1.2, 3.5, dist) * step(length(worldPos.xy), 99.2);
+          gl_Position = uViewProj * vec4(worldPos, 1.0);
+          float isMote = step(0.70, fract(aSeed.w * 13.37));
+          gl_PointSize = clamp((isMote > 0.5 ? 65.0 : 90.0) / max(dist, 1.0), 2.0, 14.0) * step(0.01, fade);
+          vPhase = aSeed.w; vAlpha = fade;
+        }
+      `;
+
+      const petalFS = `#version 300 es
+        precision highp float;
+        in float vPhase;
+        in float vAlpha;
+        uniform float uTime;
+        uniform float uNight;
+        out vec4 fragColor;
+        void main() {
+          vec2 uv = gl_PointCoord * 2.0 - 1.0;
+          float isMote = step(0.70, fract(vPhase * 13.37));
+          if (isMote > 0.5) {
+            float glow = exp(-dot(uv, uv) * 4.2);
+            if (glow < 0.03) discard;
+            float pulse = 0.55 + 0.45 * sin(uTime * 3.4 + vPhase * 40.0);
+            vec3 moteCol = mix(vec3(1.1, 0.98, 0.80), vec3(1.1, 1.4, 0.65), uNight);
+            fragColor = vec4(moteCol, clamp(glow * mix(0.55, 1.2 * pulse, uNight) * vAlpha, 0.0, 1.0));
+          } else {
+            float ang = uTime * (1.2 + fract(vPhase * 5.3) * 1.5) + vPhase * 6.2831;
+            float ca = cos(ang), sa = sin(ang);
+            vec2 p = vec2(ca * uv.x - sa * uv.y, sa * uv.x + ca * uv.y); p.x *= 1.55;
+            float alpha = 1.0 - smoothstep(0.55, 0.95, length(p));
+            if (alpha < 0.05) discard;
+            vec3 petalCol = mix(vec3(1.0, 0.78, 0.86), vec3(1.0, 0.95, 0.97), fract(vPhase * 19.7)) * mix(1.0, 0.35, uNight);
+            fragColor = vec4(petalCol, alpha * 0.85 * vAlpha);
+          }
+        }
+      `;
+
+      // =========================================================================
+      // 7. Post-Processing Shaders (Bloom Extract, Gaussian Blur, ACES Composite)
+      // =========================================================================
+      const quadVS = `#version 300 es
+        precision highp float;
+        out vec2 vUV;
+        void main() {
+          vec2 pos = vec2((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0);
+          vUV = pos * 0.5 + 0.5;
+          gl_Position = vec4(pos, 0.0, 1.0);
+        }
+      `;
+
+      const bloomExtractFS = `#version 300 es
+        precision highp float;
+        in vec2 vUV;
+        uniform sampler2D uSceneTex;
+        out vec4 fragColor;
+        void main() {
+          vec3 col = texture(uSceneTex, vUV).rgb;
+          float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+          float soft = clamp((lum - 0.82) / 0.65, 0.0, 1.0);
+          fragColor = vec4(col * soft * soft, 1.0);
+        }
+      `;
+
+      const blurFS = `#version 300 es
+        precision highp float;
+        in vec2 vUV;
+        uniform sampler2D uTex;
+        uniform vec2 uDir;
+        out vec4 fragColor;
+        void main() {
+          float w[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+          vec3 res = texture(uTex, vUV).rgb * w[0];
+          for (int i = 1; i < 5; i++) {
+            vec2 off = uDir * float(i) * 1.6;
+            res += texture(uTex, vUV + off).rgb * w[i];
+            res += texture(uTex, vUV - off).rgb * w[i];
+          }
+          fragColor = vec4(res, 1.0);
+        }
+      `;
+
+      const compositeFS = `#version 300 es
+        precision highp float;
+        in vec2 vUV;
+        uniform sampler2D uSceneTex;
+        uniform sampler2D uBloomTex;
+        uniform vec2 uSunScreen;
+        uniform float uSunIntensity;
+        uniform float uAspect;
+        out vec4 fragColor;
+
+        vec3 acesFilm(vec3 x) {
+          return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+        }
+
+        void main() {
+          vec3 hdr = texture(uSceneTex, vUV).rgb;
+          vec3 bloom = texture(uBloomTex, vUV).rgb;
+          hdr += bloom * 0.72;
+
+          // Subtle screen-space sun shaft glow
+          if (uSunIntensity > 0.001) {
+            vec2 diff = vUV - uSunScreen; diff.x *= uAspect;
+            float d = length(diff), ang = atan(diff.y, diff.x);
+            float rays = 0.65 + 0.35 * sin(ang * 9.0) * cos(ang * 5.0 + 1.2);
+            float halo = exp(-d * 2.5) * 0.25 + exp(-d * 7.0) * 0.28 * rays;
+            hdr += vec3(1.0, 0.85, 0.62) * halo * uSunIntensity;
+          }
+
+          vec3 mapped = acesFilm(hdr * 0.96);
+          // Subtle cinematic vignette
+          float vig = 1.0 - 0.18 * dot(vUV - 0.5, vUV - 0.5);
+          mapped = pow(mapped * vig, vec3(1.0 / 1.12));
+          fragColor = vec4(mapped, 1.0);
+        }
+      `;
+
+      // =========================================================================
+      // Procedural Geometry Builders
+      // =========================================================================
+      function buildCylinderTerrain() {
+        const radialSegs = 128, axialSegs = 160, cols = radialSegs + 1, rows = axialSegs + 1;
+        const positions = new Float32Array(cols * rows * 3);
+        const normals = new Float32Array(cols * rows * 3);
+        const data = new Float32Array(cols * rows * 3);
+
+        for (let iz = 0; iz <= axialSegs; iz++) {
+          const z = -HALF_LENGTH + (iz / axialSegs) * LENGTH;
+          for (let it = 0; it <= radialSegs; it++) {
+            const theta = -Math.PI + (it / radialSegs) * (Math.PI * 2.0);
+            const h = getTerrainHeight(theta, z), r = RADIUS - h;
+            const idx = (iz * cols + it) * 3;
+            positions[idx] = r * Math.cos(theta); positions[idx + 1] = r * Math.sin(theta); positions[idx + 2] = z;
+            const { windowMask } = getStripInfo(theta);
+            data[idx] = theta; data[idx + 1] = windowMask;
+            data[idx + 2] = windowMask < 0.5 ? getRiverFactor(theta, z) : 0.0;
+          }
+        }
+
+        const epsT = (Math.PI * 2.0) / radialSegs, epsZ = LENGTH / axialSegs;
+        for (let iz = 0; iz <= axialSegs; iz++) {
+          const z = -HALF_LENGTH + (iz / axialSegs) * LENGTH;
+          for (let it = 0; it <= radialSegs; it++) {
+            const theta = -Math.PI + (it / radialSegs) * (Math.PI * 2.0);
+            const rL = RADIUS - getTerrainHeight(theta - epsT, z), rR = RADIUS - getTerrainHeight(theta + epsT, z);
+            const rD = RADIUS - getTerrainHeight(theta, z - epsZ), rU = RADIUS - getTerrainHeight(theta, z + epsZ);
+            const dTx = rR * Math.cos(theta + epsT) - rL * Math.cos(theta - epsT);
+            const dTy = rR * Math.sin(theta + epsT) - rL * Math.sin(theta - epsT);
+            const dZx = (rU - rD) * Math.cos(theta), dZy = (rU - rD) * Math.sin(theta), dZz = 2.0 * epsZ;
+            let nx = -dZz * dTy, ny = dZz * dTx, nz = dZx * dTy - dZy * dTx;
+            const len = Math.hypot(nx, ny, nz) || 1.0;
+            const idx = (iz * cols + it) * 3;
+            normals[idx] = nx / len; normals[idx + 1] = ny / len; normals[idx + 2] = nz / len;
+          }
+        }
+
+        const indices = new Uint32Array(radialSegs * axialSegs * 6);
+        let p = 0;
+        for (let iz = 0; iz < axialSegs; iz++) {
+          for (let it = 0; it < radialSegs; it++) {
+            const a = iz * cols + it, b = a + 1, c = a + cols, d = c + 1;
+            indices[p++] = a; indices[p++] = c; indices[p++] = b;
+            indices[p++] = b; indices[p++] = c; indices[p++] = d;
+          }
+        }
+
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+        function bind(loc, arr) {
+          const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+          gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+        }
+        bind(0, positions); bind(1, normals); bind(2, data);
+        const idxBuf = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+        gl.bindVertexArray(null);
+        return { vao, count: indices.length };
+      }
+
+      function pushTriColor(pos, norm, col, a, b, c, color) {
+        const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+        const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const len = Math.hypot(nx, ny, nz) || 1.0;
+        nx /= len; ny /= len; nz /= len;
+        pos.push(...a, ...b, ...c);
+        norm.push(nx, ny, nz, nx, ny, nz, nx, ny, nz);
+        col.push(...color, ...color, ...color);
+      }
+
+      function addBoxCol(pos, norm, col, x0, x1, y0, y1, z0, z1, color) {
+        const v = [
+          [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+          [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]
+        ];
+        const faces = [[4,5,6,7], [1,0,3,2], [0,4,7,3], [5,1,2,6], [3,7,6,2], [0,1,5,4]];
+        for (const f of faces) {
+          pushTriColor(pos, norm, col, v[f[0]], v[f[1]], v[f[2]], color);
+          pushTriColor(pos, norm, col, v[f[0]], v[f[2]], v[f[3]], color);
+        }
+      }
+
+      function createVColInstancedVAO(pos, norm, col, instPos, instUp, instMeta) {
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+        function bindStatic(loc, data) {
+          const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+        }
+        function bindInst(loc, data) {
+          const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+          gl.vertexAttribDivisor(loc, 1);
+        }
+        bindStatic(0, pos); bindStatic(1, norm); bindStatic(2, col);
+        bindInst(3, instPos); bindInst(4, instUp); bindInst(5, instMeta);
+        gl.bindVertexArray(null);
+        return { vao, vertexCount: pos.length / 3, instanceCount: instPos.length / 3 };
+      }
+
+      function buildAqueductColonnade() {
+        const pos = [], norm = [], idx = [];
+        function pushQuad(a, b, c, d) {
+          const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+          const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+          let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+          const len = Math.hypot(nx, ny, nz) || 1.0;
+          const base = pos.length / 3;
+          pos.push(...a, ...b, ...c, ...d);
+          norm.push(nx/len, ny/len, nz/len, nx/len, ny/len, nz/len, nx/len, ny/len, nz/len, nx/len, ny/len, nz/len);
+          idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+        }
+        function addBoxI(u0, u1, h0, h1, w0, w1) {
+          pushQuad([u0, h0, w1], [u1, h0, w1], [u1, h1, w1], [u0, h1, w1]);
+          pushQuad([u1, h0, w0], [u0, h0, w0], [u0, h1, w0], [u1, h1, w0]);
+          pushQuad([u0, h0, w0], [u0, h0, w1], [u0, h1, w1], [u0, h1, w0]);
+          pushQuad([u1, h0, w1], [u1, h0, w0], [u1, h1, w0], [u1, h1, w1]);
+          pushQuad([u0, h1, w1], [u1, h1, w1], [u1, h1, w0], [u0, h1, w0]);
+          pushQuad([u0, h0, w0], [u1, h0, w0], [u1, h0, w1], [u0, h0, w1]);
+        }
+        for (const side of [-1, 1]) {
+          const uA = side < 0 ? -0.5 : 0.38, uB = side < 0 ? -0.38 : 0.5;
+          const uPA = side < 0 ? -0.5 : 0.365, uPB = side < 0 ? -0.365 : 0.5;
+          addBoxI(uPA, uPB, -2.5, 1.4, -1.75, 1.75);
+          addBoxI(uA, uB, 1.4, 11.4, -1.35, 1.35);
+          addBoxI(uPA, uPB, 11.4, 12.5, -1.65, 1.65);
+        }
+        const archSegs = 12, archSpan = 0.38, springH = 12.5, archRise = 6.5, spandrelTop = 20.6;
+        for (let i = 0; i < archSegs; i++) {
+          const a0 = Math.PI * (1.0 - i / archSegs), a1 = Math.PI * (1.0 - (i + 1) / archSegs);
+          const u0 = Math.cos(a0) * archSpan, u1 = Math.cos(a1) * archSpan;
+          const h0 = springH + Math.sin(a0) * archRise, h1 = springH + Math.sin(a1) * archRise;
+          pushQuad([u0, h0, 1.35], [u1, h1, 1.35], [u1, spandrelTop, 1.35], [u0, spandrelTop, 1.35]);
+          pushQuad([u1, h1, -1.35], [u0, h0, -1.35], [u0, spandrelTop, -1.35], [u1, spandrelTop, -1.35]);
+          pushQuad([u0, h0, -1.35], [u1, h1, -1.35], [u1, h1, 1.35], [u0, h0, 1.35]);
+        }
+        addBoxI(-0.5, -0.38, springH, spandrelTop, -1.35, 1.35);
+        addBoxI(0.38, 0.5, springH, spandrelTop, -1.35, 1.35);
+        addBoxI(-0.5, 0.5, spandrelTop, 21.8, -1.65, 1.65);
+        addBoxI(-0.5, -0.44, 21.8, 25.2, -1.0, 1.0);
+        addBoxI(-0.05, 0.05, 21.8, 25.2, -1.0, 1.0);
+        addBoxI(0.44, 0.5, 21.8, 25.2, -1.0, 1.0);
+        addBoxI(-0.5, 0.5, 25.2, 26.8, -1.3, 1.3);
+
+        const numBays = 24, bayAngle = (Math.PI * 2.0) / numBays;
+        const zRings = [-60, 140];
+        const instData = [];
+        for (const zPos of zRings) {
+          for (let b = 0; b < numBays; b++) instData.push(-Math.PI * 0.5 + b * bayAngle, zPos, bayAngle);
+        }
+
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+        function bind(loc, arr, div) {
+          const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+          if (div) gl.vertexAttribDivisor(loc, 1);
+        }
+        bind(0, pos, false); bind(1, norm, false); bind(2, instData, true);
+        const idxBuf = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
+        gl.bindVertexArray(null);
+        return { vao, indexCount: idx.length, instanceCount: instData.length / 3 };
+      }
+
+      function buildGrassField() {
+        const bladePos = new Float32Array([-0.5,0,0, 0.5,0,0, -0.26,0.5,0.035, 0.26,0.5,0.035, 0,1.0,0.10]);
+        const bladeIdx = new Uint16Array([0,1,2, 1,3,2, 2,3,4]);
+        const cols = 280, rows = 300, count = cols * rows; // 84,000 ultra-slender blades
+        const instUV = new Float32Array(count * 2), instSeed = new Float32Array(count * 4);
+        let seed = 9187;
+        const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+        let p2 = 0, p4 = 0;
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            instUV[p2++] = (c + rand()) / cols; instUV[p2++] = (r + rand()) / rows;
+            instSeed[p4++] = rand() * Math.PI * 2;
+            instSeed[p4++] = 0.62 + rand() * 0.52;
+            instSeed[p4++] = 0.044 + rand() * 0.028;
+            instSeed[p4++] = rand();
+          }
+        }
+        const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+        const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); gl.bufferData(gl.ARRAY_BUFFER, bladePos, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+        const ub = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ub); gl.bufferData(gl.ARRAY_BUFFER, instUV, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(1, 1);
+        const sb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, sb); gl.bufferData(gl.ARRAY_BUFFER, instSeed, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(2, 1);
+        const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, bladeIdx, gl.STATIC_DRAW);
+        gl.bindVertexArray(null);
+        return { vao, indexCount: bladeIdx.length, instanceCount: count };
+      }
+
+      // Multi-branching cylindrical tree trunks + thousands of instanced leaf-cluster quads
+      function buildVolumetricTrees() {
+        const trunkPos = [], trunkNorm = [], trunkCol = [];
+        function addLimb(p0, p1, r0, r1, segs, barkCol) {
+          const dx = p1[0] - p0[0], dy = p1[1] - p0[1], dz = p1[2] - p0[2];
+          const len = Math.hypot(dx, dy, dz) || 1.0;
+          const ax = dx / len, ay = dy / len, az = dz / len;
+          let ux = ay * 0 - az * (Math.abs(ay) < 0.9 ? 1 : 0);
+          let uy = az * (Math.abs(ay) < 0.9 ? 0 : 1) - ax * 0;
+          let uz = ax * (Math.abs(ay) < 0.9 ? 1 : 0) - ay * (Math.abs(ay) < 0.9 ? 0 : 1);
+          const uLen = Math.hypot(ux, uy, uz) || 1.0; ux /= uLen; uy /= uLen; uz /= uLen;
+          const vx = ay * uz - az * uy, vy = az * ux - ax * uz, vz = ax * uy - ay * ux;
+          for (let i = 0; i < segs; i++) {
+            const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
+            const c0 = Math.cos(a0), s0 = Math.sin(a0), c1 = Math.cos(a1), s1 = Math.sin(a1);
+            const b0 = [p0[0]+(ux*c0+vx*s0)*r0, p0[1]+(uy*c0+vy*s0)*r0, p0[2]+(uz*c0+vz*s0)*r0];
+            const b1 = [p0[0]+(ux*c1+vx*s1)*r0, p0[1]+(uy*c1+vy*s1)*r0, p0[2]+(uz*c1+vz*s1)*r0];
+            const t0 = [p1[0]+(ux*c0+vx*s0)*r1, p1[1]+(uy*c0+vy*s0)*r1, p1[2]+(uz*c0+vz*s0)*r1];
+            const t1 = [p1[0]+(ux*c1+vx*s1)*r1, p1[1]+(uy*c1+vy*s1)*r1, p1[2]+(uz*c1+vz*s1)*r1];
+            pushTriColor(trunkPos, trunkNorm, trunkCol, b0, t0, b1, barkCol);
+            pushTriColor(trunkPos, trunkNorm, trunkCol, b1, t0, t1, barkCol);
+          }
+        }
+
+        // Branching skeleton + local crown leaf offsets
+        const bark = [0.28, 0.19, 0.15];
+        const localLeaves = []; // { x, y, z, size, ao }
+        let bSeed = 31337;
+        const bRand = () => ((bSeed = (bSeed * 1664525 + 1013904223) >>> 0) / 4294967296);
+
+        function grow(p0, dir, len, rad, depth) {
+          const p1 = [p0[0] + dir[0] * len, p0[1] + dir[1] * len, p0[2] + dir[2] * len];
+          addLimb(p0, p1, rad, rad * 0.65, depth === 0 ? 6 : 4, bark);
+          if (depth >= 1) {
+            // Anchor foliage clusters directly onto mid-branches and twig tips so no leaves ever float
+            const numC = depth === 1 ? 3 : 6;
+            for (let k = 0; k < numC; k++) {
+              const tMix = depth === 1 ? (0.55 + k * 0.2) : 1.0;
+              const bx = p0[0] + (p1[0] - p0[0]) * tMix;
+              const by = p0[1] + (p1[1] - p0[1]) * tMix;
+              const bz = p0[2] + (p1[2] - p0[2]) * tMix;
+              const ox = (bRand() - 0.5) * 0.85, oy = (bRand() - 0.35) * 0.65, oz = (bRand() - 0.5) * 0.85;
+              const dCenter = Math.hypot(bx + ox, by + oy - 3.6, bz + oz);
+              localLeaves.push({
+                x: bx + ox, y: by + oy, z: bz + oz,
+                size: 0.65 + bRand() * 0.42,
+                ao: Math.min(1.0, 0.38 + dCenter * 0.25)
+              });
+            }
+          }
+          if (depth >= 2) return;
+          const n = depth === 0 ? 3 : 2;
+          for (let i = 0; i < n; i++) {
+            const az = (i / n) * Math.PI * 2 + bRand() * 0.7;
+            const sp = depth === 0 ? 0.58 : 0.68;
+            const dx = dir[0] * 0.72 + Math.cos(az) * sp, dy = dir[1] * 0.78 + 0.35, dz = dir[2] * 0.72 + Math.sin(az) * sp;
+            const nl = Math.hypot(dx, dy, dz) || 1.0;
+            grow(p1, [dx / nl, dy / nl, dz / nl], len * 0.68, rad * 0.62, depth + 1);
+          }
+        }
+        grow([0, -0.3, 0], [0.04, 1.0, 0.02], 2.2, 0.24, 0);
+        // Crown center fill
+        for (let k = 0; k < 6; k++) {
+          localLeaves.push({ x: (bRand() - 0.5) * 1.1, y: 3.1 + bRand() * 1.4, z: (bRand() - 0.5) * 1.1, size: 0.72 + bRand() * 0.32, ao: 0.48 + (k / 6) * 0.45 });
+        }
+
+        const tInstPos = [], tInstUp = [], tInstMeta = [];
+        const leafPos = [], leafMeta = [];
+        let seed = 7741;
+        const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+
+        let totalTreesPlaced = 0;
+        function placeTrees(count, typeId, biasBottom) {
+          const targetTotal = totalTreesPlaced + count;
+          for (let i = 0; i < count * 5 && totalTreesPlaced < targetTotal; i++) {
+            const theta = (rand() < biasBottom) ? -Math.PI * 0.5 + (rand() - 0.5) * 0.68 : -Math.PI + rand() * Math.PI * 2;
+            const z = -340 + rand() * 680;
+            if (getStripInfo(theta).windowMask > 0.1 || getRiverFactor(theta, z) > 0.1) continue;
+            const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
+            const dTheta = theta - sector;
+            if (Math.abs(dTheta) < 0.115) continue;
+            if (Math.abs(dTheta - (-0.06 + 0.015 * Math.sin(z * 0.02))) < 0.03) continue;
+
+            const r = RADIUS - getTerrainHeight(theta, z);
+            const px = r * Math.cos(theta), py = r * Math.sin(theta);
+            const ux = -Math.cos(theta), uy = -Math.sin(theta), uz = 0;
+            const rot = rand() * Math.PI * 2;
+            const scale = typeId === 1 ? (1.15 + rand() * 0.55) : (0.85 + rand() * 0.55);
+
+            tInstPos.push(px, py, z);
+            tInstUp.push(ux, uy, uz);
+            tInstMeta.push(rot, scale, 0.0);
+            totalTreesPlaced++;
+
+            const rx = -Math.sin(theta), ry = Math.cos(theta);
+            const ca = Math.cos(rot), sa = Math.sin(rot);
+            for (const lf of localLeaves) {
+              const lx = lf.x * scale, ly = lf.y * scale, lz = lf.z * scale;
+              const rlx = lx * ca - lz * sa, rlz = lx * sa + lz * ca;
+              leafPos.push(px + rx * rlx + ux * ly, py + ry * rlx + uy * ly, z + rlz);
+              leafMeta.push(lf.size * scale, lf.ao, typeId, rand());
+            }
+          }
+        }
+        placeTrees(220, 0, 0.62); // Sakura
+        placeTrees(160, 1, 0.55); // Poplar
+        placeTrees(160, 2, 0.55); // Autumn Maple
+
+        const trunks = createVColInstancedVAO(trunkPos, trunkNorm, trunkCol, tInstPos, tInstUp, tInstMeta);
+
+        // Leaf cluster quads VAO
+        const quadVerts = new Float32Array([-1,-1, 1,-1, 1,1, -1,1]);
+        const quadIdx = new Uint16Array([0,1,2, 0,2,3]);
+        const leafVAO = gl.createVertexArray();
+        gl.bindVertexArray(leafVAO);
+        const qb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, qb); gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+        const lpb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, lpb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(leafPos), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(1, 1);
+        const lmb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, lmb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(leafMeta), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(2, 1);
+        const qib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, qib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, quadIdx, gl.STATIC_DRAW);
+        gl.bindVertexArray(null);
+
+        return { trunks, leaves: { vao: leafVAO, indexCount: 6, instanceCount: leafPos.length / 3 } };
+      }
+
+      function buildObelisk() {
+        const pos = [], norm = [], col = [];
+        const stone = [0.76, 0.72, 0.65], plinth = [0.62, 0.58, 0.52], gold = [1.45, 1.15, 0.48];
+        addBoxCol(pos, norm, col, -5.2, 5.2, -1.5, 2.2, -5.2, 5.2, plinth);
+        addBoxCol(pos, norm, col, -3.6, 3.6, 2.2, 5.5, -3.6, 3.6, plinth);
+
+        // Tall monumental obelisk with 3 glowing golden bands (reaching near cylinder axis)
+        const tiers = [
+          [5.5, 28.0, 2.5, 2.0, stone],
+          [28.0, 29.3, 2.04, 1.98, gold],
+          [29.3, 52.0, 1.98, 1.5, stone],
+          [52.0, 53.2, 1.54, 1.48, gold],
+          [53.2, 74.0, 1.48, 1.0, stone],
+          [74.0, 75.1, 1.04, 0.98, gold],
+          [75.1, 82.0, 0.98, 0.72, stone]
+        ];
+        for (const [y0, y1, w0, w1, c] of tiers) {
+          const b = [[-w0, y0, -w0], [w0, y0, -w0], [w0, y0, w0], [-w0, y0, w0]];
+          const t = [[-w1, y1, -w1], [w1, y1, -w1], [w1, y1, w1], [-w1, y1, w1]];
+          for (let i = 0; i < 4; i++) {
+            const j = (i + 1) % 4;
+            pushTriColor(pos, norm, col, b[j], b[i], t[i], c);
+            pushTriColor(pos, norm, col, b[j], t[i], t[j], c);
+          }
+        }
+        const wt = 0.72, yt = 82.0;
+        const topB = [[-wt, yt, -wt], [wt, yt, -wt], [wt, yt, wt], [-wt, yt, wt]];
+        for (let i = 0; i < 4; i++) {
+          const j = (i + 1) % 4;
+          pushTriColor(pos, norm, col, topB[j], topB[i], [0, 88.0, 0], gold);
+        }
+        const zOb = 275.0, thetaOb = -Math.PI * 0.5;
+        const r = RADIUS - getTerrainHeight(thetaOb, zOb);
+        return createVColInstancedVAO(pos, norm, col, [r * Math.cos(thetaOb), r * Math.sin(thetaOb), zOb], [-Math.cos(thetaOb), -Math.sin(thetaOb), 0], [0, 1, 0]);
+      }
+
+      function buildCottages() {
+        const pos = [], norm = [], col = [];
+        const wall = [0.94, 0.90, 0.82], timber = [0.34, 0.22, 0.14], roof = [0.72, 0.28, 0.20];
+        const chimney = [0.58, 0.42, 0.36], winCol = [1.22, 0.96, 0.50], postCol = [0.20, 0.22, 0.25], lampCol = [1.55, 1.20, 0.58];
+
+        addBoxCol(pos, norm, col, -1.6, 1.6, -0.5, 2.0, -1.3, 1.3, wall);
+        // Timber corner beams
+        addBoxCol(pos, norm, col, -1.64, -1.48, -0.5, 2.0, 1.20, 1.34, timber);
+        addBoxCol(pos, norm, col,  1.48,  1.64, -0.5, 2.0, 1.20, 1.34, timber);
+        // Gable roof + chimney
+        const rL = -1.85, rR = 1.85, rB = 2.0, rT = 3.35, z0 = -1.5, z1 = 1.5;
+        pushTriColor(pos, norm, col, [rL, rB, z1], [0, rT, z1], [0, rT, z0], roof);
+        pushTriColor(pos, norm, col, [rL, rB, z1], [0, rT, z0], [rL, rB, z0], roof);
+        pushTriColor(pos, norm, col, [0, rT, z1], [rR, rB, z1], [rR, rB, z0], roof);
+        pushTriColor(pos, norm, col, [0, rT, z1], [rR, rB, z0], [0, rT, z0], roof);
+        pushTriColor(pos, norm, col, [rL, rB, z1], [rR, rB, z1], [0, rT, z1], wall);
+        pushTriColor(pos, norm, col, [rR, rB, z0], [rL, rB, z0], [0, rT, z0], wall);
+        addBoxCol(pos, norm, col, 0.65, 1.05, 2.4, 3.85, -0.8, -0.4, chimney);
+
+        // Window frames + glowing panes
+        for (const wx of [-0.65, 0.65]) {
+          addBoxCol(pos, norm, col, wx - 0.34, wx + 0.34, 0.65, 1.45, 1.26, 1.33, timber);
+          addBoxCol(pos, norm, col, wx - 0.26, wx + 0.26, 0.72, 1.38, 1.29, 1.36, winCol);
+          addBoxCol(pos, norm, col, wx - 0.26, wx + 0.26, 0.72, 1.38, -1.36, -1.29, winCol);
+        }
+        addBoxCol(pos, norm, col, 1.58, 1.65, 0.72, 1.38, -0.35, 0.35, winCol);
+
+        // Streetlamp
+        addBoxCol(pos, norm, col, 2.25, 2.38, -0.5, 2.35, 1.2, 1.33, postCol);
+        addBoxCol(pos, norm, col, 2.12, 2.50, 2.35, 2.72, 1.08, 1.45, lampCol);
+
+        const instPos = [], instUp = [], instMeta = [];
+        let seed = 8821;
+        const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+        for (const cl of VILLAGE_CLUSTERS) {
+          for (let i = 0; i < 14; i++) {
+            const theta = cl.theta + (rand() - 0.5) * 0.09, z = cl.z + (rand() - 0.5) * 44.0;
+            if (getStripInfo(theta).windowMask > 0.1 || getRiverFactor(theta, z) > 0.1) continue;
+            const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
+            if (Math.abs(theta - sector) < 0.095) continue;
+            const r = RADIUS - getTerrainHeight(theta, z);
+            instPos.push(r * Math.cos(theta), r * Math.sin(theta), z);
+            instUp.push(-Math.cos(theta), -Math.sin(theta), 0);
+            instMeta.push(rand() * Math.PI * 2, 0.85 + rand() * 0.35, 0.0);
+          }
+        }
+        return createVColInstancedVAO(pos, norm, col, instPos, instUp, instMeta);
+      }
+
+      function createCloudPuffTex() {
+        const c = document.createElement('canvas');
+        c.width = 256; c.height = 256;
+        const ctx = c.getContext('2d');
+        ctx.clearRect(0, 0, 256, 256);
+
+        let seed = 3341;
+        const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+
+        // Paint overlapping soft radial billows to form a fluffy cumulus puff
+        for (let i = 0; i < 18; i++) {
+          const ang = rand() * Math.PI * 2;
+          const dist = Math.sqrt(rand()) * 46;
+          const cx = 128 + Math.cos(ang) * dist;
+          const cy = 128 + Math.sin(ang) * dist * 0.72;
+          const r = 45 + rand() * 48;
+          const g = ctx.createRadialGradient(cx, cy, r * 0.08, cx, cy, r);
+          g.addColorStop(0.0, 'rgba(255, 255, 255, 0.38)');
+          g.addColorStop(0.55, 'rgba(255, 255, 255, 0.16)');
+          g.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        return tex;
+      }
+
+      const cloudPuffTex = createCloudPuffTex();
+
+      function buildClouds() {
+        const quadVerts = new Float32Array([-1,-1, 1,-1, 1,1, -1,1]);
+        const quadIdx = new Uint16Array([0,1,2, 0,2,3]);
+
+        const cPos = [], cMeta = []; // cMeta: size, driftSpeed, shadeTint
+        let seed = 4219;
+        const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+
+        // 26 soft multi-puff cloud clusters high in the cylinder interior
+        for (let cl = 0; cl < 26; cl++) {
+          const theta = -Math.PI + rand() * Math.PI * 2;
+          const cz = -360 + rand() * 720;
+          const cr = 34 + rand() * 24;
+          const cx = cr * Math.cos(theta), cy = cr * Math.sin(theta);
+          const drift = 1.0 + rand() * 1.4;
+          const baseS = 7.5 + rand() * 6.5;
+
+          for (let p = 0; p < 7; p++) {
+            cPos.push(
+              cx + (rand() - 0.5) * baseS * 1.6,
+              cy + (rand() - 0.5) * baseS * 0.7,
+              cz + (rand() - 0.5) * baseS * 1.8
+            );
+            cMeta.push(baseS * (0.65 + rand() * 0.6), drift, 0.75 + rand() * 0.25);
+          }
+        }
+
+        const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+        const qb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, qb); gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+        const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(cPos), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(1, 1);
+
+        const mb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, mb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(cMeta), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(2, 1);
+
+        const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, quadIdx, gl.STATIC_DRAW);
+        gl.bindVertexArray(null);
+        return { vao, indexCount: 6, instanceCount: cPos.length / 3 };
+      }
+
+      function buildEndcaps() {
+        const pos = [], norm = [], segs = 64;
+        for (const sign of [-1, 1]) {
+          const z = sign * HALF_LENGTH, center = [0, 0, z + sign * 25.0];
+          for (let i = 0; i < segs; i++) {
+            const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
+            const p0 = [Math.cos(a0) * RADIUS, Math.sin(a0) * RADIUS, z];
+            const p1 = [Math.cos(a1) * RADIUS, Math.sin(a1) * RADIUS, z];
+            const tri = sign > 0 ? [p0, p1, center] : [p1, p0, center];
+            pos.push(...tri[0], ...tri[1], ...tri[2]);
+            norm.push(0, 0, -sign, 0, 0, -sign, 0, 0, -sign);
+          }
+        }
+        const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+        const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pos), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+        const nb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, nb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(norm), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+        gl.bindVertexArray(null);
+        return { vao, vertexCount: pos.length / 3 };
+      }
+
+      function buildStorkFlock() {
+        const pos = [], norm = [], col = [], wing = [];
+        const white = [0.97, 0.98, 1.0], black = [0.10, 0.11, 0.14], red = [0.92, 0.24, 0.14];
+        function pushS(a, b, c, color, wA, wB, wC) {
+          const ux = b[0]-a[0], uy = b[1]-a[1], uz = b[2]-a[2], vx = c[0]-a[0], vy = c[1]-a[1], vz = c[2]-a[2];
+          let nx = uy*vz-uz*vy, ny = uz*vx-ux*vz, nz = ux*vy-uy*vx;
+          const l = Math.hypot(nx, ny, nz) || 1;
+          pos.push(...a, ...b, ...c); norm.push(nx/l, ny/l, nz/l, nx/l, ny/l, nz/l, nx/l, ny/l, nz/l);
+          col.push(...color, ...color, ...color); wing.push(wA, wB, wC);
+        }
+        // Smooth 3D Lathe Body (tail -> torso -> neck -> head -> red beak)
+        const bodyProfile = [
+          [-0.55, 0.02, 0.02, white], // tail tip
+          [-0.35, 0.00, 0.09, white],
+          [-0.08, 0.02, 0.16, white], // chest/torso
+          [ 0.22, 0.03, 0.15, white],
+          [ 0.48, 0.06, 0.09, white], // shoulder
+          [ 0.72, 0.11, 0.06, white], // neck
+          [ 0.94, 0.14, 0.055, white],
+          [ 1.08, 0.15, 0.07, white], // head
+          [ 1.18, 0.13, 0.04, red],   // beak base
+          [ 1.56, 0.09, 0.006, red]   // beak tip
+        ];
+        const bSegs = 8;
+        for (let r = 0; r < bodyProfile.length - 1; r++) {
+          const [z0, y0, rad0, c0] = bodyProfile[r];
+          const [z1, y1, rad1, c1] = bodyProfile[r + 1];
+          for (let i = 0; i < bSegs; i++) {
+            const a0 = (i / bSegs) * Math.PI * 2, a1 = ((i + 1) / bSegs) * Math.PI * 2;
+            const p00 = [Math.cos(a0)*rad0, y0 + Math.sin(a0)*rad0*0.8, z0];
+            const p10 = [Math.cos(a1)*rad0, y0 + Math.sin(a1)*rad0*0.8, z0];
+            const p01 = [Math.cos(a0)*rad1, y1 + Math.sin(a0)*rad1*0.8, z1];
+            const p11 = [Math.cos(a1)*rad1, y1 + Math.sin(a1)*rad1*0.8, z1];
+            pushS(p00, p01, p10, c1, 0, 0, 0);
+            pushS(p10, p01, p11, c1, 0, 0, 0);
+          }
+        }
+        // Twin trailing red legs with feet
+        for (const lx of [-0.055, 0.055]) {
+          pushS([lx - 0.02, -0.04, -0.35], [lx + 0.02, -0.04, -0.35], [lx, -0.07, -1.28], red, 0, 0, 0);
+          pushS([lx - 0.04, -0.07, -1.28], [lx + 0.04, -0.07, -1.28], [lx, -0.08, -1.42], red, 0, 0, 0);
+        }
+
+        // Cambered 6-segment wings + 5 splayed black primary wingtip feathers
+        const wingProfile = [
+          [0.08,  0.04,  0.32, -0.22, white, 0.00],
+          [0.42,  0.08,  0.34, -0.26, white, 0.25],
+          [0.78,  0.10,  0.28, -0.28, white, 0.50],
+          [1.12,  0.09,  0.20, -0.26, black, 0.72],
+          [1.42,  0.07,  0.12, -0.22, black, 0.90]
+        ];
+        for (const s of [-1, 1]) {
+          for (let i = 0; i < wingProfile.length - 1; i++) {
+            const [x0, y0, fz0, bz0, col0, w0] = wingProfile[i];
+            const [x1, y1, fz1, bz1, col1, w1] = wingProfile[i + 1];
+            const pF0 = [s*x0, y0, fz0], pB0 = [s*x0, y0 - 0.02, bz0];
+            const pF1 = [s*x1, y1, fz1], pB1 = [s*x1, y1 - 0.02, bz1];
+            pushS(pF0, pF1, pB0, col1, w0, w1, w0);
+            pushS(pB0, pF1, pB1, col1, w0, w1, w1);
+          }
+          // 5 splayed black primary feathers at the wingtip
+          const tipX = 1.42, tipY = 0.07;
+          for (let f = 0; f < 5; f++) {
+            const ang = -0.35 + f * 0.22;
+            const zBase = 0.10 - f * 0.07;
+            const fx = tipX + Math.cos(ang) * 0.42;
+            const fz = zBase - Math.sin(ang) * 0.22 - 0.14;
+            pushS([s*tipX, tipY, zBase + 0.03], [s*fx, tipY + 0.02, fz], [s*tipX, tipY, zBase - 0.03], black, 0.90, 1.0, 0.90);
+          }
+        }
+
+        const numFlocks = 3, perFlock = 9, total = numFlocks * perFlock;
+        const instPos = new Float32Array(total * 3), instFwd = new Float32Array(total * 3);
+        const instUp = new Float32Array(total * 3), instPhase = new Float32Array(total);
+        const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+        const bind3 = (loc, arr) => {
+          const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+        };
+        bind3(0, pos); bind3(1, norm); bind3(2, col);
+        const wb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, wb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(wing), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 1, gl.FLOAT, false, 0, 0);
+        const dyn = (loc, sz, arr) => {
+          const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
+          gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, sz, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(loc, 1);
+          return b;
+        };
+        const pB = dyn(4, 3, instPos), fB = dyn(5, 3, instFwd), uB = dyn(6, 3, instUp), phB = dyn(7, 1, instPhase);
+        gl.bindVertexArray(null);
+
+        function getLeaderState(t) {
+          const orbitAng = t * 0.08, orbitR = 38.0, zCenter = Math.sin(t * 0.055) * 190.0;
+          const lx = orbitR * Math.cos(orbitAng), ly = orbitR * Math.sin(orbitAng);
+          const fx = -orbitR * 0.08 * Math.sin(orbitAng), fy = orbitR * 0.08 * Math.cos(orbitAng), fz = 190.0 * 0.055 * Math.cos(t * 0.055);
+          const fLen = Math.hypot(fx, fy, fz) || 1, uLen = Math.hypot(lx, ly) || 1;
+          return { pos: [lx, ly, zCenter], fwd: [fx/fLen, fy/fLen, fz/fLen], up: [-lx/uLen, -ly/uLen, 0] };
+        }
+
+        function update(t) {
+          let idx = 0;
+          for (let f = 0; f < numFlocks; f++) {
+            const orbitAng = t * 0.08 + f * 2.1, orbitR = 38.0 + f * 7.0, zCenter = Math.sin(t * 0.055 + f * 1.9) * 190.0;
+            const lx = orbitR * Math.cos(orbitAng), ly = orbitR * Math.sin(orbitAng), lz = zCenter;
+            const fx = -orbitR * 0.08 * Math.sin(orbitAng), fy = orbitR * 0.08 * Math.cos(orbitAng), fz = 190.0 * 0.055 * Math.cos(t * 0.055 + f * 1.9);
+            const fLen = Math.hypot(fx, fy, fz) || 1, fwd = [fx/fLen, fy/fLen, fz/fLen];
+            const uLen = Math.hypot(lx, ly) || 1, up = [-lx/uLen, -ly/uLen, 0];
+            const rx = fwd[1]*up[2] - fwd[2]*up[1], ry = fwd[2]*up[0] - fwd[0]*up[2], rz = fwd[0]*up[1] - fwd[1]*up[0];
+            for (let b = 0; b < perFlock; b++) {
+              const rank = Math.ceil(b / 2), side = b === 0 ? 0 : (b % 2 === 1 ? -1 : 1);
+              const back = -rank * 2.6, lat = side * rank * 2.2;
+              instPos[idx*3] = lx + fwd[0]*back + rx*lat; instPos[idx*3+1] = ly + fwd[1]*back + ry*lat; instPos[idx*3+2] = lz + fwd[2]*back + rz*lat;
+              instFwd[idx*3] = fwd[0]; instFwd[idx*3+1] = fwd[1]; instFwd[idx*3+2] = fwd[2];
+              instUp[idx*3] = up[0]; instUp[idx*3+1] = up[1]; instUp[idx*3+2] = up[2];
+              instPhase[idx] = f * 1.7 + b * 0.55; idx++;
+            }
+          }
+          gl.bindBuffer(gl.ARRAY_BUFFER, pB); gl.bufferSubData(gl.ARRAY_BUFFER, 0, instPos);
+          gl.bindBuffer(gl.ARRAY_BUFFER, fB); gl.bufferSubData(gl.ARRAY_BUFFER, 0, instFwd);
+          gl.bindBuffer(gl.ARRAY_BUFFER, uB); gl.bufferSubData(gl.ARRAY_BUFFER, 0, instUp);
+          gl.bindBuffer(gl.ARRAY_BUFFER, phB); gl.bufferSubData(gl.ARRAY_BUFFER, 0, instPhase);
+        }
+        return { vao, vertexCount: pos.length / 3, instanceCount: total, update, getLeaderState };
+      }
+
+      function buildPetals() {
+        const count = 800, seeds = new Float32Array(count * 4);
+        let seed = 54321;
+        const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+        for (let i = 0; i < count * 4; i++) seeds[i] = rand();
+        const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+        const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, seeds, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 0, 0);
+        gl.bindVertexArray(null);
+        return { vao, count };
+      }
+
+      // Procedural Canvas2D -> WebGL2 Mipmapped Leaf & Sakura Blossom Atlas (Zero External Images)
+      function createProceduralLeafAtlas() {
+        const c = document.createElement('canvas');
+        c.width = 512; c.height = 256;
+        const ctx = c.getContext('2d');
+        ctx.clearRect(0, 0, 512, 256);
+
+        let seed = 10923;
+        const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+
+        // Left half (0..256): Delicate 5-petal Sakura blossom cluster
+        for (let i = 0; i < 65; i++) {
+          const ang = rand() * Math.PI * 2;
+          const dist = Math.sqrt(rand()) * 86;
+          const cx = 128 + Math.cos(ang) * dist;
+          const cy = 128 + Math.sin(ang) * dist;
+          const r = 10 + rand() * 12;
+          const rot = rand() * Math.PI * 2;
+          const isWhite = rand() > 0.45;
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(rot);
+          ctx.fillStyle = isWhite ? 'rgba(255, 246, 250, 0.96)' : 'rgba(255, 206, 224, 0.95)';
+          for (let p = 0; p < 5; p++) {
+            ctx.save();
+            ctx.rotate((p / 5) * Math.PI * 2);
+            ctx.beginPath();
+            ctx.ellipse(0, r * 0.55, r * 0.36, r * 0.55, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+          ctx.fillStyle = 'rgba(255, 175, 198, 0.9)';
+          ctx.beginPath();
+          ctx.arc(0, 0, r * 0.22, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // Right half (256..512): Crisp pointed organic leaf cluster
+        for (let i = 0; i < 75; i++) {
+          const ang = rand() * Math.PI * 2;
+          const dist = Math.sqrt(rand()) * 88;
+          const cx = 384 + Math.cos(ang) * dist;
+          const cy = 128 + Math.sin(ang) * dist;
+          const rx = 14 + rand() * 14, ry = 6 + rand() * 6;
+          const rot = rand() * Math.PI * 2;
+          const shade = Math.floor(145 + rand() * 95);
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(rot);
+          ctx.fillStyle = `rgba(${Math.floor(shade*0.75)}, ${shade}, ${Math.floor(shade*0.65)}, 0.96)`;
+          ctx.beginPath();
+          ctx.moveTo(-rx, 0);
+          ctx.quadraticCurveTo(0, -ry, rx, 0);
+          ctx.quadraticCurveTo(0, ry, -rx, 0);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        return tex;
+      }
+
+      const leafAtlasTex = createProceduralLeafAtlas();
+
+      // =========================================================================
+      // Compile All Programs
+      // =========================================================================
+      let terrainProg, archProg, grassProg, leafProg, vcolProg, cloudProg, endcapProg, storkProg, petalProg;
+      let shadowSimpleProg, shadowArchProg, shadowLeafProg, bloomExtractProg, blurProg, compositeProg;
+      try {
+        terrainProg      = createProgram(terrainVS, terrainFS);
+        archProg         = createProgram(archVS, archFS);
+        grassProg        = createProgram(grassVS, grassFS);
+        leafProg         = createProgram(leafVS, leafFS);
+        vcolProg         = createProgram(vcolVS, vcolFS);
+        cloudProg        = createProgram(cloudVS, cloudFS);
+        endcapProg       = createProgram(endcapVS, endcapFS);
+        storkProg        = createProgram(storkVS, storkFS);
+        petalProg        = createProgram(petalVS, petalFS);
+        shadowSimpleProg = createProgram(shadowSimpleVS, shadowEmptyFS);
+        shadowArchProg   = createProgram(shadowArchVS, shadowEmptyFS);
+        shadowLeafProg   = createProgram(shadowLeafVS, shadowLeafFS);
+        bloomExtractProg = createProgram(quadVS, bloomExtractFS);
+        blurProg         = createProgram(quadVS, blurFS);
+        compositeProg    = createProgram(quadVS, compositeFS);
+      } catch (e) {
+        showError('셰이더 컴파일 실패: ' + e.message);
+        return;
+      }
+
+      const terrainMesh = buildCylinderTerrain();
+      const colonnade   = buildAqueductColonnade();
+      const grassField  = buildGrassField();
+      const trees       = buildVolumetricTrees();
+      const obelisk     = buildObelisk();
+      const cottages    = buildCottages();
+      const clouds      = buildClouds();
+      const endcaps     = buildEndcaps();
+      const storkFlock  = buildStorkFlock();
+      const petals      = buildPetals();
+      const emptyVAO    = gl.createVertexArray();
+
+      // =========================================================================
+      // 2048x2048 Shadow Map FBO + HDR Scene FBO + Quarter-Res Bloom FBOs
+      // =========================================================================
+      const shadowTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_RES, SHADOW_RES, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const shadowFBO = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+      gl.drawBuffers([gl.NONE]);
+      gl.readBuffer(gl.NONE);
+
+      let sceneFBO = null, sceneTex = null, sceneDepth = null;
+      let bloomFBO = [null, null], bloomTex = [null, null];
+      let bloomW = 1, bloomH = 1;
+
+      function createColorTex(w, h) {
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        if (hasFloatFBO) {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        } else {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        }
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        return tex;
+      }
+
+      function rebuildPostFBOs(w, h) {
+        if (sceneFBO) { gl.deleteFramebuffer(sceneFBO); gl.deleteTexture(sceneTex); gl.deleteRenderbuffer(sceneDepth); }
+        sceneTex = createColorTex(w, h);
+        sceneDepth = gl.createRenderbuffer();
+        gl.bindRenderbuffer(gl.RENDERBUFFER, sceneDepth);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+        sceneFBO = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTex, 0);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, sceneDepth);
+
+        bloomW = Math.max(1, w >> 2);
+        bloomH = Math.max(1, h >> 2);
+        for (let i = 0; i < 2; i++) {
+          if (bloomFBO[i]) { gl.deleteFramebuffer(bloomFBO[i]); gl.deleteTexture(bloomTex[i]); }
+          bloomTex[i] = createColorTex(bloomW, bloomH);
+          bloomFBO[i] = gl.createFramebuffer();
+          gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFBO[i]);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, bloomTex[i], 0);
+        }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
+
+      function resize() {
+        const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+        const w = Math.max(1, Math.floor(window.innerWidth * dpr));
+        const h = Math.max(1, Math.floor(window.innerHeight * dpr));
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w; canvas.height = h;
+          rebuildPostFBOs(w, h);
+        }
+      }
+      window.addEventListener('resize', resize);
+      resize();
+
+      function bindCommonUniforms(prog, viewProj, nightVal, duskVal, lightViewProj) {
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uViewProj'), false, viewProj);
+        gl.uniform3fv(gl.getUniformLocation(prog, 'uCamPos'), camPos);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uNight'), nightVal);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uDusk'), duskVal);
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uLightViewProj'), false, lightViewProj);
+        gl.uniform1i(gl.getUniformLocation(prog, 'uShadowMap'), 0);
+      }
+
+      // =========================================================================
+      // Camera, Time Mode & 90s Cinematic Spline
+      // =========================================================================
+      let mode = 'cinematic', timeMode = 'auto';
+      const camPos = [0.0, -(RADIUS - 2.5), -240.0];
+      let yaw = Math.PI * 0.5, pitch = 0.08;
+      const keys = Object.create(null);
+      let isDragging = false, lastMouseX = 0, lastMouseY = 0;
+
+      window.addEventListener('keydown', (e) => {
+        const k = e.key.toLowerCase();
+        keys[k] = true;
+        if (k === 'c') {
+          mode = mode === 'cinematic' ? 'free' : 'cinematic';
+          modeBadgeEl.textContent = mode === 'free' ? 'FREE EXPLORE' : 'CINEMATIC AUTO-DRIVE';
+          modeBadgeEl.classList.toggle('free', mode === 'free');
+          freeControlsEl.style.display = mode === 'free' ? 'block' : 'none';
+          if (mode === 'free') fadeOverlayEl.style.opacity = '0';
+        } else if (k === '1') { timeMode = 'day'; timeBadgeEl.textContent = 'DAY'; }
+        else if (k === '2')   { timeMode = 'night'; timeBadgeEl.textContent = 'NIGHT'; }
+        else if (k === '3')   { timeMode = 'auto'; timeBadgeEl.textContent = 'AUTO CYCLE'; }
+        else if (k === 'h')   { hudEl.classList.toggle('hidden'); }
+        else if (k === 'r')   { toggleVideoRecord(); }
+      });
+
+      let cinTimeOffset = 0.0;
+      let mediaRecorder = null, recTimer = null;
+
+      function toggleVideoRecord() {
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+          clearTimeout(recTimer);
+          mediaRecorder.stop();
+          return;
+        }
+        if (typeof canvas.captureStream !== 'function' || typeof MediaRecorder === 'undefined') {
+          alert('이 브라우저는 캔버스 직접 녹화를 지원하지 않습니다. Win+G 또는 OBS를 사용해 주세요.');
+          return;
+        }
+        mode = 'cinematic';
+        timeMode = 'auto';
+        modeBadgeEl.textContent = 'CINEMATIC AUTO-DRIVE';
+        modeBadgeEl.classList.remove('free');
+        freeControlsEl.style.display = 'none';
+        timeBadgeEl.textContent = 'AUTO CYCLE';
+        cinTimeOffset = performance.now() * 0.001;
+        hudEl.classList.add('hidden');
+
+        const stream = canvas.captureStream(60);
+        const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+        const chunks = [];
+        mediaRecorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12000000 });
+        mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+        mediaRecorder.onstop = () => {
+          hudEl.classList.remove('hidden');
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'oneill-cylinder-cinematic.webm';
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+        };
+        mediaRecorder.start(250);
+        recTimer = setTimeout(() => {
+          if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+        }, LOOP_DURATION * 1000);
+      }
+      window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+      canvas.addEventListener('mousedown', (e) => { if (mode === 'free') { isDragging = true; lastMouseX = e.clientX; lastMouseY = e.clientY; } });
+      window.addEventListener('mouseup', () => { isDragging = false; });
+      window.addEventListener('mousemove', (e) => {
+        if (!isDragging || mode !== 'free') return;
+        yaw += (e.clientX - lastMouseX) * 0.004;
+        pitch = Math.max(-1.45, Math.min(1.45, pitch - (e.clientY - lastMouseY) * 0.004));
+        lastMouseX = e.clientX; lastMouseY = e.clientY;
+      });
+
+      const LOOP_DURATION = 90.0;
+      const cinTarget = [0, -90, 0];
+      const SPLINE_WAYPOINTS = [
+        { p: [  0.0,  38.0, -220.0], l: [  0.0, -25.0,   60.0] },
+        { p: [-14.0,  10.0, -140.0], l: [  0.0, -50.0,   80.0] },
+        { p: [ -6.0, -86.0,  -70.0], l: [  0.0, -90.0,   60.0] },
+        { p: [ -3.0, -95.2,   15.0], l: [  2.0, -91.0,   90.0] },
+        { p: [  0.0, -94.8,   95.0], l: [  0.0, -84.0,  210.0] },
+        { p: [  0.0, -94.5,  185.0], l: [  0.0, -76.0,  275.0] },
+        { p: [  2.0, -78.0,  230.0], l: [  0.0, -64.0,  275.0] },
+        { p: [ 12.0, -10.0,  140.0], l: [  0.0,  15.0,   40.0] },
+        { p: [ 22.0,  22.0,   40.0], l: [  0.0,  25.0,  -40.0] },
+        { p: [ 15.5, -94.2,   60.0], l: [ 15.5, -96.0,  -30.0] },
+        { p: [ 15.8, -95.4,  -40.0], l: [ 14.5, -95.0, -130.0] },
+        { p: [-13.0, -94.2, -145.0], l: [-13.5, -95.5, -210.0] },
+        { p: [ -4.0, -72.0, -250.0], l: [ 12.0,  35.0, -400.0] },
+        { p: [  0.0, -45.0, -325.0], l: [ 14.0,  68.0, -400.0] }
+      ];
+
+      function catmullRomVec3(p0, p1, p2, p3, s) {
+        const s2 = s * s, s3 = s2 * s, out = [0, 0, 0];
+        for (let i = 0; i < 3; i++) {
+          out[i] = 0.5 * ((2*p1[i]) + (-p0[i]+p2[i])*s + (2*p0[i]-5*p1[i]+4*p2[i]-p3[i])*s2 + (-p0[i]+3*p1[i]-3*p2[i]+p3[i])*s3);
+        }
+        return out;
+      }
+
+      function updateCinematicCamera(t) {
+        const u = (t % LOOP_DURATION) / LOOP_DURATION, n = SPLINE_WAYPOINTS.length - 1;
+        const scaled = u * n, idx = Math.min(n - 1, Math.floor(scaled)), s = scaled - idx;
+        const pos = catmullRomVec3(SPLINE_WAYPOINTS[Math.max(0,idx-1)].p, SPLINE_WAYPOINTS[idx].p, SPLINE_WAYPOINTS[Math.min(n,idx+1)].p, SPLINE_WAYPOINTS[Math.min(n,idx+2)].p, s);
+        const look = catmullRomVec3(SPLINE_WAYPOINTS[Math.max(0,idx-1)].l, SPLINE_WAYPOINTS[idx].l, SPLINE_WAYPOINTS[Math.min(n,idx+1)].l, SPLINE_WAYPOINTS[Math.min(n,idx+2)].l, s);
+
+        const trackBlend = smoothstep(0.48, 0.53, u) * (1.0 - smoothstep(0.62, 0.67, u));
+        if (trackBlend > 0.001) {
+          const st = storkFlock.getLeaderState(t);
+          for (let i = 0; i < 3; i++) {
+            pos[i] = lerp(pos[i], st.pos[i] - st.fwd[i]*5.2 + st.up[i]*1.4, trackBlend);
+            look[i] = lerp(look[i], st.pos[i] + st.fwd[i]*12.0, trackBlend);
+          }
+        }
+        const r = Math.hypot(pos[0], pos[1]);
+        if (r > RADIUS - 2.2) { pos[0] = (pos[0]/r)*(RADIUS-2.2); pos[1] = (pos[1]/r)*(RADIUS-2.2); }
+        camPos[0] = pos[0]; camPos[1] = pos[1]; camPos[2] = pos[2];
+        cinTarget[0] = look[0]; cinTarget[1] = look[1]; cinTarget[2] = look[2];
+        fadeOverlayEl.style.opacity = Math.max(smoothstep(0.96, 0.998, u), 1.0 - smoothstep(0.0, 0.025, u)).toFixed(3);
+      }
+
+      function updateFreeCamera(dt) {
+        const moveSpeed = (keys['shift'] ? 28.0 : 45.0) * dt, cosP = Math.cos(pitch);
+        const fx = Math.cos(yaw) * cosP, fy = Math.sin(pitch), fz = Math.sin(yaw) * cosP;
+        const rx = -Math.sin(yaw), rz = Math.cos(yaw);
+        let mx = 0, my = 0, mz = 0;
+        if (keys['w'] || keys['arrowup'])    { mx += fx; my += fy; mz += fz; }
+        if (keys['s'] || keys['arrowdown'])  { mx -= fx; my -= fy; mz -= fz; }
+        if (keys['d'] || keys['arrowright']) { mx += rx; mz += rz; }
+        if (keys['a'] || keys['arrowleft'])  { mx -= rx; mz -= rz; }
+        if (keys[' ']) my += 1.0; if (keys['control'] || keys['q']) my -= 1.0;
+        const mLen = Math.hypot(mx, my, mz);
+        if (mLen > 0.0001) { camPos[0] += (mx/mLen)*moveSpeed; camPos[1] += (my/mLen)*moveSpeed; camPos[2] += (mz/mLen)*moveSpeed; }
+        const r = Math.hypot(camPos[0], camPos[1]);
+        if (r > RADIUS - 2.2) { camPos[0] = (camPos[0]/r)*(RADIUS-2.2); camPos[1] = (camPos[1]/r)*(RADIUS-2.2); }
+        camPos[2] = Math.max(-HALF_LENGTH + 8.0, Math.min(HALF_LENGTH - 8.0, camPos[2]));
+      }
+
+      // =========================================================================
+      // Render Loop: Shadow Pass -> HDR Scene FBO -> Bloom Blur -> ACES Composite
+      // =========================================================================
+      const projMat = new Float32Array(16), viewMat = new Float32Array(16), viewProjMat = new Float32Array(16);
+      const lightProj = new Float32Array(16), lightView = new Float32Array(16), lightViewProj = new Float32Array(16);
+      const sunDirLen = Math.hypot(0.24, 0.44, 0.86);
+      const sunDirN = [0.24 / sunDirLen, 0.44 / sunDirLen, 0.86 / sunDirLen];
+
+      let lastTime = performance.now(), fpsFrames = 0, fpsLast = lastTime;
+
+      function frame(now) {
+        const dt = Math.min((now - lastTime) * 0.001, 0.1);
+        lastTime = now;
+        const t = now * 0.001;
+
+        fpsFrames++;
+        if (now - fpsLast >= 500) {
+          fpsEl.textContent = `FPS: ${Math.round((fpsFrames * 1000) / (now - fpsLast))}`;
+          fpsFrames = 0; fpsLast = now;
+        }
+
+        const cinT = Math.max(0.0, t - cinTimeOffset);
+        let nightVal = 0.0, duskVal = 0.0;
+        if (timeMode === 'night') { nightVal = 1.0; }
+        else if (timeMode === 'auto') {
+          const u = (cinT % LOOP_DURATION) / LOOP_DURATION;
+          nightVal = smoothstep(0.56, 0.80, u);
+          duskVal = smoothstep(0.45, 0.60, u) * (1.0 - smoothstep(0.68, 0.82, u));
+        }
+
+        if (mode === 'cinematic') updateCinematicCamera(cinT);
+        else updateFreeCamera(dt);
+
+        storkFlock.update(t);
+
+        // --- PASS 1: 2048x2048 Directional Shadow Map ---
+        const lCenter = [camPos[0] * 0.4, camPos[1] * 0.4, camPos[2]];
+        const lEye = [lCenter[0] + sunDirN[0] * 140, lCenter[1] + sunDirN[1] * 140, lCenter[2] + sunDirN[2] * 140];
+        mat4Ortho(lightProj, -115, 115, -115, 115, 10, 320);
+        mat4LookAt(lightView, lEye, lCenter, [0, 0, 1]);
+        mat4Mul(lightViewProj, lightProj, lightView);
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+        gl.viewport(0, 0, SHADOW_RES, SHADOW_RES);
+        gl.enable(gl.DEPTH_TEST);
+        gl.enable(gl.CULL_FACE);
+        gl.cullFace(gl.BACK);
+        gl.clear(gl.DEPTH_BUFFER_BIT);
+
+        gl.useProgram(shadowArchProg);
+        gl.uniformMatrix4fv(gl.getUniformLocation(shadowArchProg, 'uLightViewProj'), false, lightViewProj);
+        gl.bindVertexArray(colonnade.vao);
+        gl.drawElementsInstanced(gl.TRIANGLES, colonnade.indexCount, gl.UNSIGNED_SHORT, 0, colonnade.instanceCount);
+
+        gl.useProgram(shadowSimpleProg);
+        gl.uniformMatrix4fv(gl.getUniformLocation(shadowSimpleProg, 'uLightViewProj'), false, lightViewProj);
+        gl.bindVertexArray(trees.trunks.vao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, trees.trunks.vertexCount, trees.trunks.instanceCount);
+        gl.bindVertexArray(obelisk.vao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, obelisk.vertexCount, obelisk.instanceCount);
+        gl.bindVertexArray(cottages.vao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, cottages.vertexCount, cottages.instanceCount);
+
+        gl.disable(gl.CULL_FACE);
+        gl.useProgram(shadowLeafProg);
+        gl.uniformMatrix4fv(gl.getUniformLocation(shadowLeafProg, 'uLightViewProj'), false, lightViewProj);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, leafAtlasTex);
+        gl.uniform1i(gl.getUniformLocation(shadowLeafProg, 'uLeafAtlas'), 1);
+        gl.bindVertexArray(trees.leaves.vao);
+        gl.drawElementsInstanced(gl.TRIANGLES, trees.leaves.indexCount, gl.UNSIGNED_SHORT, 0, trees.leaves.instanceCount);
+        gl.enable(gl.CULL_FACE);
+
+        // --- PASS 2: Main 3D Scene into Offscreen HDR FBO ---
+        gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+
+        const aspect = canvas.width / Math.max(1, canvas.height);
+        mat4Perspective(projMat, (68 * Math.PI) / 180, aspect, 0.3, 1200.0);
+        const target = mode === 'cinematic' ? cinTarget : [
+          camPos[0] + Math.cos(yaw) * Math.cos(pitch),
+          camPos[1] + Math.sin(pitch),
+          camPos[2] + Math.sin(yaw) * Math.cos(pitch)
+        ];
+        mat4LookAt(viewMat, camPos, target, [0, 1, 0]);
+        mat4Mul(viewProjMat, projMat, viewMat);
+
+        const bgR = lerp(lerp(0.46, 0.025, nightVal), 0.92, duskVal * 0.78);
+        const bgG = lerp(lerp(0.72, 0.045, nightVal), 0.46, duskVal * 0.78);
+        const bgB = lerp(lerp(0.98, 0.110, nightVal), 0.34, duskVal * 0.78);
+        gl.clearColor(bgR, bgG, bgB, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+
+        // Terrain
+        gl.useProgram(terrainProg);
+        bindCommonUniforms(terrainProg, viewProjMat, nightVal, duskVal, lightViewProj);
+        gl.uniform1f(gl.getUniformLocation(terrainProg, 'uTime'), t);
+        gl.bindVertexArray(terrainMesh.vao);
+        gl.drawElements(gl.TRIANGLES, terrainMesh.count, gl.UNSIGNED_INT, 0);
+
+        // Endcaps (+Z Solar Dome & -Z Saturn Space Dome)
+        gl.disable(gl.CULL_FACE);
+        gl.useProgram(endcapProg);
+        bindCommonUniforms(endcapProg, viewProjMat, nightVal, duskVal, lightViewProj);
+        gl.bindVertexArray(endcaps.vao);
+        gl.drawArrays(gl.TRIANGLES, 0, endcaps.vertexCount);
+        gl.enable(gl.CULL_FACE);
+
+        // Aqueduct Colonnade
+        gl.useProgram(archProg);
+        bindCommonUniforms(archProg, viewProjMat, nightVal, duskVal, lightViewProj);
+        gl.bindVertexArray(colonnade.vao);
+        gl.drawElementsInstanced(gl.TRIANGLES, colonnade.indexCount, gl.UNSIGNED_SHORT, 0, colonnade.instanceCount);
+
+        // Grass
+        gl.disable(gl.CULL_FACE);
+        gl.useProgram(grassProg);
+        bindCommonUniforms(grassProg, viewProjMat, nightVal, duskVal, lightViewProj);
+        gl.uniform1f(gl.getUniformLocation(grassProg, 'uCamTheta'), Math.atan2(camPos[1], camPos[0]));
+        gl.uniform1f(gl.getUniformLocation(grassProg, 'uCamZ'), camPos[2]);
+        gl.uniform1f(gl.getUniformLocation(grassProg, 'uTime'), t);
+        gl.bindVertexArray(grassField.vao);
+        gl.drawElementsInstanced(gl.TRIANGLES, grassField.indexCount, gl.UNSIGNED_SHORT, 0, grassField.instanceCount);
+
+        // Tree Trunks, Obelisk, Cottages
+        gl.enable(gl.CULL_FACE);
+        gl.useProgram(vcolProg);
+        bindCommonUniforms(vcolProg, viewProjMat, nightVal, duskVal, lightViewProj);
+        gl.bindVertexArray(trees.trunks.vao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, trees.trunks.vertexCount, trees.trunks.instanceCount);
+        gl.bindVertexArray(obelisk.vao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, obelisk.vertexCount, obelisk.instanceCount);
+        gl.bindVertexArray(cottages.vao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, cottages.vertexCount, cottages.instanceCount);
+
+        // Volumetric Leaf/Blossom Quads + Storks
+        gl.disable(gl.CULL_FACE);
+        gl.useProgram(leafProg);
+        bindCommonUniforms(leafProg, viewProjMat, nightVal, duskVal, lightViewProj);
+        gl.uniform1f(gl.getUniformLocation(leafProg, 'uTime'), t);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, leafAtlasTex);
+        gl.uniform1i(gl.getUniformLocation(leafProg, 'uLeafAtlas'), 1);
+        gl.bindVertexArray(trees.leaves.vao);
+        gl.drawElementsInstanced(gl.TRIANGLES, trees.leaves.indexCount, gl.UNSIGNED_SHORT, 0, trees.leaves.instanceCount);
+
+        gl.useProgram(storkProg);
+        bindCommonUniforms(storkProg, viewProjMat, nightVal, duskVal, lightViewProj);
+        gl.uniform1f(gl.getUniformLocation(storkProg, 'uTime'), t);
+        gl.bindVertexArray(storkFlock.vao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, storkFlock.vertexCount, storkFlock.instanceCount);
+        gl.enable(gl.CULL_FACE);
+
+        // Soft Fluffy Billboarded Clouds (alpha-blended, zero polygon edges)
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+        gl.disable(gl.CULL_FACE);
+        gl.useProgram(cloudProg);
+        bindCommonUniforms(cloudProg, viewProjMat, nightVal, duskVal, lightViewProj);
+        gl.uniform1f(gl.getUniformLocation(cloudProg, 'uTime'), t);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, cloudPuffTex);
+        gl.uniform1i(gl.getUniformLocation(cloudProg, 'uCloudTex'), 1);
+        gl.bindVertexArray(clouds.vao);
+        gl.drawElementsInstanced(gl.TRIANGLES, clouds.indexCount, gl.UNSIGNED_SHORT, 0, clouds.instanceCount);
+        gl.enable(gl.CULL_FACE);
+
+        // Petals & Night Fireflies
+        gl.useProgram(petalProg);
+        gl.uniformMatrix4fv(gl.getUniformLocation(petalProg, 'uViewProj'), false, viewProjMat);
+        gl.uniform3fv(gl.getUniformLocation(petalProg, 'uCamPos'), camPos);
+        gl.uniform1f(gl.getUniformLocation(petalProg, 'uTime'), t);
+        gl.uniform1f(gl.getUniformLocation(petalProg, 'uNight'), nightVal);
+        gl.bindVertexArray(petals.vao);
+        gl.drawArrays(gl.POINTS, 0, petals.count);
+        gl.depthMask(true);
+        gl.disable(gl.BLEND);
+
+        // --- PASS 3: Bright-Pass & Separable Gaussian Bloom (Quarter-Res) ---
+        gl.disable(gl.DEPTH_TEST);
+        gl.bindVertexArray(emptyVAO);
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFBO[0]);
+        gl.viewport(0, 0, bloomW, bloomH);
+        gl.useProgram(bloomExtractProg);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+        gl.uniform1i(gl.getUniformLocation(bloomExtractProg, 'uSceneTex'), 0);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        gl.useProgram(blurProg);
+        gl.uniform1i(gl.getUniformLocation(blurProg, 'uTex'), 0);
+        for (let iter = 0; iter < 2; iter++) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFBO[1]);
+          gl.bindTexture(gl.TEXTURE_2D, bloomTex[0]);
+          gl.uniform2f(gl.getUniformLocation(blurProg, 'uDir'), 1.0 / bloomW, 0.0);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+          gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFBO[0]);
+          gl.bindTexture(gl.TEXTURE_2D, bloomTex[1]);
+          gl.uniform2f(gl.getUniformLocation(blurProg, 'uDir'), 0.0, 1.0 / bloomH);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+        }
+
+        // --- PASS 4: Final ACES Filmic Composite to Screen ---
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.useProgram(compositeProg);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+        gl.uniform1i(gl.getUniformLocation(compositeProg, 'uSceneTex'), 0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, bloomTex[0]);
+        gl.uniform1i(gl.getUniformLocation(compositeProg, 'uBloomTex'), 1);
+
+        const sunWorld = [camPos[0] + sunDirN[0]*500, camPos[1] + sunDirN[1]*500, camPos[2] + sunDirN[2]*500];
+        const sx = viewProjMat[0]*sunWorld[0] + viewProjMat[4]*sunWorld[1] + viewProjMat[8]*sunWorld[2] + viewProjMat[12];
+        const sy = viewProjMat[1]*sunWorld[0] + viewProjMat[5]*sunWorld[1] + viewProjMat[9]*sunWorld[2] + viewProjMat[13];
+        const sw = viewProjMat[3]*sunWorld[0] + viewProjMat[7]*sunWorld[1] + viewProjMat[11]*sunWorld[2] + viewProjMat[15];
+        const sunVis = sw > 0.1 ? Math.max(0.0, Math.min(1.0, (sw - 0.1) * 0.5)) : 0.0;
+        gl.uniform2f(gl.getUniformLocation(compositeProg, 'uSunScreen'), (sx/sw)*0.5+0.5, (sy/sw)*0.5+0.5);
+        gl.uniform1f(gl.getUniformLocation(compositeProg, 'uSunIntensity'), sunVis * 0.85 * (1.0 - nightVal * 0.92));
+        gl.uniform1f(gl.getUniformLocation(compositeProg, 'uAspect'), aspect);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        gl.enable(gl.DEPTH_TEST);
+        gl.bindVertexArray(null);
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>
