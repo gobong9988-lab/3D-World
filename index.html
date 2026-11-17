@@ -392,7 +392,8 @@
         uniform sampler2D uLeafAtlas;
         out vec4 fragColor;
         void main() {
-          vec2 atlasUV = vec2(vUV.x * 0.5 + (vType < 0.5 ? 0.0 : 0.5), vUV.y);
+          float sec = vType < 0.5 ? 0.0 : (vType > 2.5 ? 0.6666 : 0.3333);
+          vec2 atlasUV = vec2(vUV.x * 0.3333 + sec, vUV.y);
           float a = texture(uLeafAtlas, atlasUV).a;
           if (a < 0.35) discard;
           fragColor = vec4(1.0);
@@ -860,11 +861,13 @@
           vec3 right = normalize(cross(worldUp, toCam));
           vec3 up = cross(toCam, right);
 
-          // Rotate quad randomly around view axis + gentle wind flutter
-          float ang = aInstMeta.w * 6.283185 + sin(uTime * 1.4 + aInstMeta.w * 18.0 + aInstPos.z * 0.2) * 0.14;
+          // Rotate quad randomly around view axis (keep Weeping Willow tendrils hanging downward)
+          float isWillow = step(2.5, aInstMeta.z);
+          float sway = sin(uTime * 1.4 + aInstMeta.w * 18.0 + aInstPos.z * 0.2) * 0.14;
+          float ang = mix(aInstMeta.w * 6.283185 + sway, sway * 0.65, isWillow);
           float ca = cos(ang), sa = sin(ang);
           vec2 rq = vec2(ca * aQuad.x - sa * aQuad.y, sa * aQuad.x + ca * aQuad.y);
-          vec3 offset = (right * rq.x + up * rq.y) * aInstMeta.x;
+          vec3 offset = (right * rq.x + up * rq.y * mix(1.0, 1.45, isWillow)) * aInstMeta.x;
           vec3 worldPos = aInstPos + offset;
 
           vWorldPos = worldPos;
@@ -889,9 +892,10 @@
 
         void main() {
           float tType = vMeta.z;
-          vec2 atlasUV = vec2(vUV.x * 0.5 + (tType < 0.5 ? 0.0 : 0.5), vUV.y);
+          float sec = tType < 0.5 ? 0.0 : (tType > 2.5 ? 0.6666 : 0.3333);
+          vec2 atlasUV = vec2(vUV.x * 0.3333 + sec, vUV.y);
           vec4 tex = texture(uLeafAtlas, atlasUV);
-          if (tex.a < 0.32) discard;
+          if (tex.a < 0.30) discard;
 
           float dist = length(uCamPos - vWorldPos);
           vec3 N = normalize(vNormal);
@@ -901,16 +905,16 @@
 
           vec3 baseCol;
           if (tType < 0.5) {
-            // Sakura: Canvas2D-drawn individual pink/white petals modulated by per-cluster tint
             baseCol = tex.rgb * mix(vec3(1.0, 0.88, 0.93), vec3(1.0, 0.98, 1.0), seed);
           } else if (tType < 1.5) {
-            // Poplar: rich deep-to-olive green leaves
             baseCol = tex.rgb * mix(vec3(0.45, 0.72, 0.38), vec3(0.75, 0.96, 0.52), seed);
-          } else {
-            // Autumn Maple: vibrant orange, crimson, amber
+          } else if (tType < 2.5) {
             float lum = dot(tex.rgb, vec3(0.3, 0.6, 0.1));
             baseCol = mix(vec3(0.82, 0.22, 0.06), vec3(1.0, 0.68, 0.16), clamp(lum * 1.4, 0.0, 1.0))
                     * mix(vec3(0.9, 0.8, 0.8), vec3(1.1, 1.0, 0.9), seed);
+          } else {
+            // Weeping Willow: luminous lime-green cascading tendrils
+            baseCol = tex.rgb * mix(vec3(0.68, 0.96, 0.32), vec3(0.88, 1.08, 0.44), seed);
           }
 
           float shadow = calcShadowPCF(vWorldPos, N);
@@ -977,7 +981,21 @@
 
           vec3 ambient = vec3(0.36, 0.42, 0.48) * 0.62 * getAmbientTint();
           vec3 direct = getDirectLightColor() * (sunDiff * 0.72 + axisDiff * 0.22);
-          vec3 lit = vColor * (ambient + direct);
+
+          // Procedural roof tile ridges & bark/wall micro-grain
+          vec3 baseC = vColor;
+          float micro = fract(sin(dot(floor(vWorldPos.xz * 6.0), vec2(12.9898, 78.233))) * 43758.5453);
+          if (baseC.r > 0.65 && baseC.g < 0.38) {
+            float tile = 0.86 + 0.22 * sin(vWorldPos.z * 14.0) * cos(vWorldPos.x * 8.0);
+            baseC *= tile * (0.92 + 0.16 * micro);
+          } else if (baseC.r < 0.40 && baseC.b < 0.25) {
+            float barkGrain = 0.85 + 0.25 * sin(vWorldPos.x * 22.0 + vWorldPos.z * 22.0);
+            baseC *= barkGrain;
+          } else {
+            baseC *= (0.95 + 0.08 * micro);
+          }
+
+          vec3 lit = baseC * (ambient + direct);
 
           if (isEmissive > 0.5) {
             lit = vColor * (0.45 + 2.8 * max(uNight, uDusk * 0.75));
@@ -1299,13 +1317,13 @@
           vec3 bloom = texture(uBloomTex, vUV).rgb;
           hdr += bloom * 0.72;
 
-          // Subtle screen-space sun shaft glow
+          // Volumetric-style screen-space sun shafts + warm halo
           if (uSunIntensity > 0.001) {
             vec2 diff = vUV - uSunScreen; diff.x *= uAspect;
             float d = length(diff), ang = atan(diff.y, diff.x);
-            float rays = 0.65 + 0.35 * sin(ang * 9.0) * cos(ang * 5.0 + 1.2);
-            float halo = exp(-d * 2.5) * 0.25 + exp(-d * 7.0) * 0.28 * rays;
-            hdr += vec3(1.0, 0.85, 0.62) * halo * uSunIntensity;
+            float rays = 0.60 + 0.40 * sin(ang * 11.0 + 0.4) * cos(ang * 6.0 + 1.2);
+            float halo = exp(-d * 2.1) * 0.30 + exp(-d * 5.6) * 0.36 * rays;
+            hdr += vec3(1.05, 0.88, 0.62) * halo * uSunIntensity;
           }
 
           vec3 mapped = acesFilm(hdr * 0.96);
@@ -1624,6 +1642,35 @@
         placeTrees(220, 0, 0.62); // Sakura
         placeTrees(160, 1, 0.55); // Poplar
         placeTrees(160, 2, 0.55); // Autumn Maple
+
+        // 90 Weeping Willows right along the riverbanks (matching reference image 4)
+        for (let i = 0; i < 450 && totalTreesPlaced < 630; i++) {
+          const sector = (Math.floor(rand() * 4) - 1) * (Math.PI * 0.5);
+          const z = -320 + rand() * 640;
+          const riverCenter = 0.16 + 0.045 * Math.sin(z * 0.025) + 0.02 * Math.cos(z * 0.055);
+          const side = rand() > 0.5 ? 1 : -1;
+          const theta = sector + riverCenter + side * (0.052 + rand() * 0.032);
+          if (getRiverFactor(theta, z) > 0.12) continue;
+
+          const r = RADIUS - getTerrainHeight(theta, z);
+          const px = r * Math.cos(theta), py = r * Math.sin(theta);
+          const ux = -Math.cos(theta), uy = -Math.sin(theta), uz = 0;
+          const rot = rand() * Math.PI * 2;
+          const scale = 0.95 + rand() * 0.45;
+          tInstPos.push(px, py, z);
+          tInstUp.push(ux, uy, uz);
+          tInstMeta.push(rot, scale, 0.0);
+          totalTreesPlaced++;
+
+          const rx = -Math.sin(theta), ry = Math.cos(theta);
+          const ca = Math.cos(rot), sa = Math.sin(rot);
+          for (const lf of localLeaves) {
+            const lx = lf.x * scale, ly = lf.y * scale, lz = lf.z * scale;
+            const rlx = lx * ca - lz * sa, rlz = lx * sa + lz * ca;
+            leafPos.push(px + rx * rlx + ux * ly, py + ry * rlx + uy * ly, z + rlz);
+            leafMeta.push(lf.size * scale * 1.15, lf.ao, 3.0, rand());
+          }
+        }
 
         const trunks = createVColInstancedVAO(trunkPos, trunkNorm, trunkCol, tInstPos, tInstUp, tInstMeta);
 
@@ -1971,9 +2018,9 @@
       // Procedural Canvas2D -> WebGL2 Mipmapped Leaf & Sakura Blossom Atlas (Zero External Images)
       function createProceduralLeafAtlas() {
         const c = document.createElement('canvas');
-        c.width = 512; c.height = 256;
+        c.width = 768; c.height = 256;
         const ctx = c.getContext('2d');
-        ctx.clearRect(0, 0, 512, 256);
+        ctx.clearRect(0, 0, 768, 256);
 
         let seed = 10923;
         const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
@@ -2025,6 +2072,27 @@
           ctx.quadraticCurveTo(0, ry, -rx, 0);
           ctx.fill();
           ctx.restore();
+        }
+
+        // Right-third (512..768): Cascading Weeping Willow vertical leaf tendrils
+        for (let s = 0; s < 22; s++) {
+          const sx = 544 + (s / 21) * 192 + (rand() - 0.5) * 10;
+          const sy0 = 18 + rand() * 32;
+          const sy1 = 185 + rand() * 55;
+          ctx.strokeStyle = 'rgba(130, 175, 55, 0.85)';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy0);
+          ctx.quadraticCurveTo(sx + (rand() - 0.5) * 18, (sy0 + sy1) * 0.5, sx + (rand() - 0.5) * 14, sy1);
+          ctx.stroke();
+
+          for (let y = sy0 + 8; y < sy1; y += 9) {
+            const shade = Math.floor(175 + rand() * 75);
+            ctx.fillStyle = `rgba(${Math.floor(shade*0.72)}, ${shade}, ${Math.floor(shade*0.35)}, 0.95)`;
+            ctx.beginPath();
+            ctx.ellipse(sx + (rand() - 0.5) * 6, y, 3.2, 7.5, (rand() - 0.5) * 0.4, 0, Math.PI * 2);
+            ctx.fill();
+          }
         }
 
         const tex = gl.createTexture();
@@ -2148,13 +2216,21 @@
       window.addEventListener('resize', resize);
       resize();
 
+      const uniformCache = new WeakMap();
+      function getULoc(prog, name) {
+        let map = uniformCache.get(prog);
+        if (!map) { map = Object.create(null); uniformCache.set(prog, map); }
+        if (!(name in map)) map[name] = gl.getUniformLocation(prog, name);
+        return map[name];
+      }
+
       function bindCommonUniforms(prog, viewProj, nightVal, duskVal, lightViewProj) {
-        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uViewProj'), false, viewProj);
-        gl.uniform3fv(gl.getUniformLocation(prog, 'uCamPos'), camPos);
-        gl.uniform1f(gl.getUniformLocation(prog, 'uNight'), nightVal);
-        gl.uniform1f(gl.getUniformLocation(prog, 'uDusk'), duskVal);
-        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uLightViewProj'), false, lightViewProj);
-        gl.uniform1i(gl.getUniformLocation(prog, 'uShadowMap'), 0);
+        gl.uniformMatrix4fv(getULoc(prog, 'uViewProj'), false, viewProj);
+        gl.uniform3fv(getULoc(prog, 'uCamPos'), camPos);
+        gl.uniform1f(getULoc(prog, 'uNight'), nightVal);
+        gl.uniform1f(getULoc(prog, 'uDusk'), duskVal);
+        gl.uniformMatrix4fv(getULoc(prog, 'uLightViewProj'), false, lightViewProj);
+        gl.uniform1i(getULoc(prog, 'uShadowMap'), 0);
       }
 
       // =========================================================================
