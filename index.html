@@ -121,7 +121,7 @@
       const RADIUS = 100.0;
       const LENGTH = 800.0;
       const HALF_LENGTH = LENGTH * 0.5;
-      const LOOP_DURATION = 90.0;
+      const LOOP_DURATION = 135.0;
 
       // =======================================================================
       // Renderer, Scene, Camera, Post-Processing (HDR Bloom + ACES Filmic)
@@ -136,7 +136,7 @@
       document.body.appendChild(renderer.domElement);
 
       const scene = new THREE.Scene();
-      const dayFogCol = new THREE.Color(0x88bbee);
+      const dayFogCol = new THREE.Color(0xa6c4cf);
       const duskFogCol = new THREE.Color(0xd96b4e);
       const nightFogCol = new THREE.Color(0x070d1f);
       scene.background = dayFogCol.clone();
@@ -183,9 +183,9 @@
             ) * 0.25;
             col = mix(col, mist * vec3(1.03, 1.01, 0.97), 0.18);
 
-            // Lifted 80s matte-film shadow toe + warm nostalgic tint
-            col = col * 0.93 + vec3(0.022, 0.024, 0.028);
-            col *= vec3(1.02, 1.00, 0.95);
+            // Lifted 80s matte-film shadow toe + warm golden nostalgic tint
+            col = col * 0.93 + vec3(0.025, 0.024, 0.022);
+            col *= vec3(1.07, 1.02, 0.91);
 
             // Soft optical lens vignette
             col *= 1.0 - r2 * 0.28;
@@ -266,8 +266,8 @@
       function getRiverFactor(theta, z) {
         const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
         const dTheta = theta - sector;
-        const riverCenter = 0.16 + 0.045 * Math.sin(z * 0.025) + 0.02 * Math.cos(z * 0.055);
-        return 1.0 - smoothstep(0.022, 0.048, Math.abs(dTheta - riverCenter));
+        const riverCenter = 0.085 + 0.035 * Math.sin(z * 0.022) + 0.015 * Math.cos(z * 0.048);
+        return 1.0 - smoothstep(0.038, 0.068, Math.abs(dTheta - riverCenter));
       }
 
       function getTerrainHeight(theta, z) {
@@ -278,7 +278,7 @@
         const n2 = noise2(theta * 10.0 + 7.4, z * 0.035);
         let h = (n1 * 5.2 + n2 * 1.8 - 1.5) * lawnFlat + 0.35 * Math.sin(z * 0.02) * Math.cos(theta * 8.0);
         const river = getRiverFactor(theta, z);
-        h = lerp(h, -1.6, river);
+        h = lerp(h, -2.4, river);
 
         const terraceZone = smoothstep(0.28, 0.42, Math.sin(z * 0.018 + sector * 2.0))
                           * smoothstep(0.14, 0.19, dTheta) * (1.0 - smoothstep(0.32, 0.36, dTheta)) * (1.0 - river);
@@ -337,17 +337,17 @@
             uv[idx * 2] = it / radialSegs;
             uv[idx * 2 + 1] = iz / axialSegs;
 
-            // Vertex tinting for lush spring emerald meadow, gentle footpath, and clear riverbanks
+            // Vertex tinting for lush spring emerald meadow, warm dirt footpaths, and sandy riverbanks
             const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
             const dTheta = theta - sector;
             const river = getRiverFactor(theta, z);
             const pathDist = Math.abs(dTheta - (-0.06 + 0.015 * Math.sin(z * 0.02)));
-            const pathMask = 1.0 - smoothstep(0.007, 0.015, pathDist);
+            const pathMask = 1.0 - smoothstep(0.014, 0.028, pathDist);
             const meadowVar = 0.5 + 0.5 * Math.sin(z * 0.03 + theta * 5.0);
 
-            let cr = lerp(0.62, 0.78, meadowVar), cg = lerp(1.22, 1.42, meadowVar), cb = lerp(0.46, 0.58, meadowVar);
-            if (pathMask > 0.1) { cr = lerp(cr, 1.18, pathMask * 0.75); cg = lerp(cg, 1.08, pathMask * 0.75); cb = lerp(cb, 0.82, pathMask * 0.75); }
-            if (river > 0.05) { cr = lerp(cr, 0.58, river); cg = lerp(cg, 0.88, river); cb = lerp(cb, 0.78, river); }
+            let cr = lerp(0.58, 0.76, meadowVar), cg = lerp(1.12, 1.30, meadowVar), cb = lerp(0.42, 0.52, meadowVar);
+            if (pathMask > 0.05) { cr = lerp(cr, 1.38, pathMask * 0.92); cg = lerp(cg, 1.08, pathMask * 0.92); cb = lerp(cb, 0.72, pathMask * 0.92); }
+            if (river > 0.05) { cr = lerp(cr, 0.85, river * 0.8); cg = lerp(cg, 0.78, river * 0.8); cb = lerp(cb, 0.62, river * 0.8); }
             col[idx * 3] = cr; col[idx * 3 + 1] = cg; col[idx * 3 + 2] = cb;
           }
         }
@@ -371,17 +371,17 @@
           map: grassDiff,
           normalMap: grassNor,
           normalScale: new THREE.Vector2(1.15, 1.15),
-          color: 0xb6f588,
+          color: 0xd6f0a8,
           vertexColors: true,
-          roughness: 0.82,
+          roughness: 0.84,
           metalness: 0.02
         });
         const terrainMesh = new THREE.Mesh(geo, terrainMat);
         terrainMesh.receiveShadow = true;
         scene.add(terrainMesh);
 
-        // Separate glossy water cylinder shell slightly above riverbed (r = RADIUS + 0.55)
-        const wGeo = new THREE.CylinderGeometry(RADIUS + 0.65, RADIUS + 0.65, LENGTH, 128, 120, true);
+        // Separate glossy water cylinder shell cleanly above carved riverbed (r = RADIUS + 1.05)
+        const wGeo = new THREE.CylinderGeometry(RADIUS + 1.05, RADIUS + 1.05, LENGTH, 144, 120, true);
         wGeo.rotateX(Math.PI * 0.5);
         // Flip normals inward
         wGeo.scale(-1, 1, 1);
@@ -394,7 +394,7 @@
           const my = (wPos.getY(i0) + wPos.getY(i1) + wPos.getY(i2)) / 3;
           const mz = (wPos.getZ(i0) + wPos.getZ(i1) + wPos.getZ(i2)) / 3;
           const th = Math.atan2(my, mx);
-          if (getRiverFactor(th, mz) > 0.08) {
+          if (getRiverFactor(th, mz) > 0.05) {
             wKeep.push(i0, i2, i1); // reversed for flipped scale
           }
         }
@@ -402,11 +402,15 @@
         wGeo.computeVertexNormals();
 
         const waterMat = new THREE.MeshStandardMaterial({
-          color: 0x1a5a72,
+          color: 0x1b7a9c,
           normalMap: waterNor,
-          normalScale: new THREE.Vector2(0.9, 0.9),
-          roughness: 0.08,
-          metalness: 0.35
+          normalScale: new THREE.Vector2(1.4, 1.4),
+          side: THREE.DoubleSide,
+          roughness: 0.06,
+          metalness: 0.55,
+          envMapIntensity: 1.5,
+          emissive: new THREE.Color(0x0d3d52),
+          emissiveIntensity: 0.24
         });
         const waterMesh = new THREE.Mesh(wGeo, waterMat);
         waterMesh.receiveShadow = true;
@@ -573,27 +577,65 @@
       // 3. Towering Stone Obelisk + Solar Dome (+Z) & Saturn Space Dome (-Z)
       // =======================================================================
       function buildObeliskAndDomes() {
-        const stoneMat = new THREE.MeshStandardMaterial({ map: stoneDiff, normalMap: stoneNor, color: 0xd6cfc2, roughness: 0.78 });
-        const goldMat = new THREE.MeshStandardMaterial({ color: 0xffd266, emissive: 0xffb833, emissiveIntensity: 1.35, roughness: 0.25, metalness: 0.8 });
+        const obStoneMat = new THREE.MeshStandardMaterial({
+          normalMap: stoneNor,
+          normalScale: new THREE.Vector2(0.85, 0.85),
+          color: 0xf7f2e6,
+          roughness: 0.45,
+          metalness: 0.05,
+          emissive: new THREE.Color(0x3a352c),
+          emissiveIntensity: 0.14
+        });
+        const goldMat = new THREE.MeshStandardMaterial({ color: 0xffd570, emissive: 0xffb833, emissiveIntensity: 1.25, roughness: 0.22, metalness: 0.82 });
+        const obCrystalMat = new THREE.MeshStandardMaterial({ color: 0xb8f4ff, emissive: 0x6be0ff, emissiveIntensity: 1.15, roughness: 0.15 });
 
         const obGroup = new THREE.Group();
-        const ped = new THREE.Mesh(new THREE.BoxGeometry(9.5, 4.5, 9.5), stoneMat);
-        ped.position.y = 1.5; ped.castShadow = true; ped.receiveShadow = true;
-        obGroup.add(ped);
-
-        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 2.6, 78, 4), stoneMat);
-        shaft.rotation.y = Math.PI * 0.25; shaft.position.y = 42.5;
+        // 3-Tiered Grand Stepped Marble Plaza Base (26m -> 20m -> 14.5m)
+        for (const [bw, bh, by] of [[26, 2.6, 1.3], [20, 2.8, 4.0], [14.5, 3.2, 7.0]]) {
+          const step = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bw), obStoneMat);
+          step.position.y = by; step.castShadow = true; step.receiveShadow = true;
+          obGroup.add(step);
+        }
+        // 8 Flanking Marble Columns & 4 Corner Golden Braziers on Plaza
+        const pColGeo = new THREE.CylinderGeometry(0.55, 0.72, 11.5, 10);
+        for (const [cx, cz] of [[-8.2,-8.2],[8.2,-8.2],[-8.2,8.2],[8.2,8.2],[0,-8.6],[0,8.6],[-8.6,0],[8.6,0]]) {
+          const col = new THREE.Mesh(pColGeo, obStoneMat);
+          col.position.set(cx, 11.1, cz); col.castShadow = true; col.receiveShadow = true;
+          obGroup.add(col);
+        }
+        // Monumental Tapered Obelisk Shaft (height 94m, base radius 4.4 -> top radius 1.9)
+        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.9, 4.4, 94, 4), obStoneMat);
+        shaft.rotation.y = Math.PI * 0.25; shaft.position.y = 55.0;
         shaft.castShadow = true; shaft.receiveShadow = true;
         obGroup.add(shaft);
 
-        for (const gy of [28, 52, 72]) {
-          const band = new THREE.Mesh(new THREE.CylinderGeometry(2.2 - gy*0.015, 2.25 - gy*0.015, 1.3, 4), goldMat);
+        // 4 Buttress Fin Ribs flanking the lower shaft
+        const finGeo = new THREE.BoxGeometry(1.4, 28, 3.4);
+        for (let f = 0; f < 4; f++) {
+          const fin = new THREE.Mesh(finGeo, obStoneMat);
+          const ang = f * Math.PI * 0.5;
+          fin.position.set(Math.cos(ang) * 4.2, 22.0, Math.sin(ang) * 4.2);
+          fin.rotation.y = -ang;
+          fin.castShadow = true; fin.receiveShadow = true;
+          obGroup.add(fin);
+        }
+
+        // 5 Glowing Gold-Celestial Bands
+        for (const gy of [24, 42, 60, 78, 94]) {
+          const t = (gy - 8) / 94;
+          const rBand = 4.4 * (1 - t) + 1.9 * t + 0.15;
+          const band = new THREE.Mesh(new THREE.CylinderGeometry(rBand, rBand * 1.03, 1.6, 4), goldMat);
           band.rotation.y = Math.PI * 0.25; band.position.y = gy;
           obGroup.add(band);
         }
-        const tip = new THREE.Mesh(new THREE.ConeGeometry(1.55, 6.5, 4), goldMat);
-        tip.rotation.y = Math.PI * 0.25; tip.position.y = 84.5;
-        obGroup.add(tip);
+        // Golden Pyramidion Cap + Floating Celestial Halo & Crystal at Apex
+        const tip = new THREE.Mesh(new THREE.ConeGeometry(2.65, 9.5, 4), goldMat);
+        tip.rotation.y = Math.PI * 0.25; tip.position.y = 106.5;
+        const apexHalo = new THREE.Mesh(new THREE.TorusGeometry(4.8, 0.35, 10, 32), goldMat);
+        apexHalo.rotation.x = Math.PI * 0.35; apexHalo.position.y = 113.0;
+        const apexCry = new THREE.Mesh(new THREE.OctahedronGeometry(2.2, 0), obCrystalMat);
+        apexCry.scale.set(0.85, 1.5, 0.85); apexCry.position.y = 115.5;
+        obGroup.add(tip, apexHalo, apexCry);
 
         const zOb = 275.0, thOb = -Math.PI * 0.5, rOb = RADIUS - getTerrainHeight(thOb, zOb);
         obGroup.position.set(rOb * Math.cos(thOb), rOb * Math.sin(thOb), zOb);
@@ -624,61 +666,29 @@
         solarDome.position.z = HALF_LENGTH;
         scene.add(solarDome);
 
-        // -Z Space Observation Glass Dome with Procedural Saturn & Milky Way
+        // -Z Radial Iron-Glass Space Dome + Real 3D NASA-Textured Saturn, Rings & Milky Way outside
+        const saturnTex = loadTex('./assets/space/saturn.jpg', 1, 1, true);
+        const saturnRingTex = loadTex('./assets/space/saturn_ring.png', 1, 1, true);
+        const milkyWayTex = loadTex('./assets/space/milky_way.jpg', 1, 1, true);
+
         const spaceMat = new THREE.ShaderMaterial({
           uniforms: { uNight: { value: 0 } },
+          transparent: true,
+          depthWrite: false,
           side: THREE.DoubleSide,
-          vertexShader: `varying vec3 vWorld; void main() { vec4 wp = modelMatrix * vec4(position, 1.0); vWorld = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }`,
+          vertexShader: `varying vec2 vXY; void main() { vXY = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
           fragmentShader: `
-            varying vec3 vWorld; uniform float uNight;
-            float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+            varying vec2 vXY; uniform float uNight;
             void main() {
-              float r = length(vWorld.xy) / 100.0;
-              float ang = atan(vWorld.y, vWorld.x);
+              float r = length(vXY) / 100.0;
+              float ang = atan(vXY.y, vXY.x);
               float ring = smoothstep(0.03, 0.06, abs(fract(r * 7.0) - 0.5));
               float spoke = smoothstep(0.02, 0.05, abs(fract(ang * 16.0 / 6.2831853) - 0.5));
               float glass = ring * mix(1.0, spoke, smoothstep(0.08, 0.25, r));
-
-              vec3 rd = normalize(vWorld - cameraPosition);
-              vec3 col = vec3(0.015, 0.022, 0.055);
-              float mw = exp(-pow((rd.y * 0.8 + rd.x * 0.55 + 0.08) * 3.8, 2.0));
-              col += vec3(0.11, 0.16, 0.30) * mw;
-              vec2 sUV = rd.xy / max(0.25, abs(rd.z)) * 110.0;
-              float h = hash21(floor(sUV));
-              if (h > 0.94) {
-                float d = length(fract(sUV) - 0.5);
-                col += vec3(0.95, 0.95, 1.0) * smoothstep(0.22, 0.01, d) * (0.6 + fract(h * 53.1));
-              }
-              vec3 satC = normalize(vec3(0.08, 0.35, -1.0)) * 12.0;
-              float satR = 1.95;
-              float b = dot(-satC, rd), c = dot(-satC, -satC) - satR*satR, disc = b*b - c;
-              float tS = 1e9; vec3 sCol = vec3(0.0);
-              if (disc > 0.0) {
-                tS = -b - sqrt(disc);
-                if (tS > 0.0) {
-                  vec3 n = normalize(rd * tS - satC);
-                  float bands = 0.5 + 0.5 * sin(n.y * 18.0 + sin(n.y * 6.0) * 1.5);
-                  sCol = mix(vec3(0.82,0.70,0.50), vec3(0.95,0.87,0.68), bands) * (max(dot(n, normalize(vec3(0.65,0.55,0.5))), 0.05) * 1.25 + 0.08);
-                }
-              }
-              vec3 ringN = normalize(vec3(-0.22, 0.92, 0.32));
-              float den = dot(rd, ringN);
-              if (abs(den) > 0.001) {
-                float tR = dot(satC, ringN) / den;
-                if (tR > 0.0 && tR < tS) {
-                  float dR = length(rd * tR - satC);
-                  if (dR > satR*1.32 && dR < satR*2.55) {
-                    float u = (dR - satR*1.32)/(satR*1.23);
-                    float cas = smoothstep(0.03, 0.07, abs(u - 0.62));
-                    vec3 rCol = mix(vec3(0.72,0.65,0.54), vec3(1.55,1.38,1.10), 0.65 + 0.35*sin(u*48.0)) * cas;
-                    col = mix(col, rCol, (0.45 + 0.45*sin(u*3.14159)) * cas);
-                  }
-                }
-              }
-              if (tS < 1e8) col = sCol;
-              col *= (1.0 + uNight * 0.65);
-              vec3 finalC = mix(vec3(0.18, 0.22, 0.28), col, glass);
-              gl_FragColor = vec4(finalC, 1.0);
+              vec3 frameCol = vec3(0.24, 0.28, 0.34);
+              vec3 tintCol = vec3(0.18, 0.28, 0.44);
+              float alpha = mix(1.0, 0.14 - uNight * 0.08, glass);
+              gl_FragColor = vec4(mix(frameCol, tintCol, glass), alpha);
             }
           `
         });
@@ -686,6 +696,61 @@
         spaceDome.position.z = -HALF_LENGTH;
         spaceDome.rotation.y = Math.PI;
         scene.add(spaceDome);
+
+        // Deep Space Backdrop outside -Z Dome (Real Milky Way + 3D Saturn + Rings)
+        const spaceGroup = new THREE.Group();
+        spaceGroup.position.set(0, 0, -HALF_LENGTH - 260);
+        const starSphere = new THREE.Mesh(
+          new THREE.SphereGeometry(480, 40, 28),
+          new THREE.MeshBasicMaterial({ map: milkyWayTex, side: THREE.BackSide, fog: false })
+        );
+        spaceGroup.add(starSphere);
+
+        const saturnGroup = new THREE.Group();
+        saturnGroup.position.set(22, 48, -110);
+        saturnGroup.rotation.set(0.32, 0.4, -0.35);
+        const saturnMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(54, 48, 32),
+          new THREE.MeshStandardMaterial({
+            map: saturnTex,
+            roughness: 0.72,
+            emissive: new THREE.Color(0x6b5a40),
+            emissiveIntensity: 0.35,
+            fog: false
+          })
+        );
+        saturnGroup.add(saturnMesh);
+
+        // Saturn Ring with radial UVs for saturn_ring.png
+        const rGeo = new THREE.RingGeometry(68, 134, 96);
+        const rPos = rGeo.attributes.position;
+        const rUV = rGeo.attributes.uv;
+        const v3 = new THREE.Vector3();
+        for (let i = 0; i < rPos.count; i++) {
+          v3.fromBufferAttribute(rPos, i);
+          const u = (v3.length() - 68) / (134 - 68);
+          rUV.setXY(i, u, 0.5);
+        }
+        const saturnRing = new THREE.Mesh(
+          rGeo,
+          new THREE.MeshStandardMaterial({
+            map: saturnRingTex,
+            transparent: true,
+            side: THREE.DoubleSide,
+            roughness: 0.65,
+            emissive: new THREE.Color(0x8c7b60),
+            emissiveIntensity: 0.42,
+            fog: false
+          })
+        );
+        saturnRing.rotation.x = Math.PI * 0.5;
+        saturnGroup.add(saturnRing);
+        spaceGroup.add(saturnGroup);
+
+        const spaceSun = new THREE.DirectionalLight(0xfff2dc, 2.4);
+        spaceSun.position.set(180, 120, 140);
+        spaceGroup.add(spaceSun);
+        scene.add(spaceGroup);
 
         return { solarMat, spaceMat };
       }
@@ -917,46 +982,28 @@
       const leafNor  = loadTex('./assets/island_tree_01/textures/island_tree_01_leaves_nor_gl_1k.jpg', 1, 1, false);
       const trunkMat = new THREE.MeshStandardMaterial({ map: barkDiff, normalMap: barkNor, roughness: 0.90 });
 
-      // Generate Studio Ghibli hand-painted gouache leaf-puff texture (warm sunlit top, cool sage-teal bottom)
+      // Generate crisp, detailed individual leaf-cluster RGBA texture (no blurry circles)
       const leafCanvas = document.createElement('canvas');
       leafCanvas.width = 512; leafCanvas.height = 512;
       const lctx = leafCanvas.getContext('2d');
       lctx.clearRect(0, 0, 512, 512);
       let aSeed = 31337;
       const aRand = () => ((aSeed = (aSeed * 1664525 + 1013904223) >>> 0) / 4294967296);
-      // 1. Soft billowing inner gouache puffs so canopies read as lush painterly clouds
-      for (let i = 0; i < 65; i++) {
+      for (let i = 0; i < 320; i++) {
         const ang = aRand() * Math.PI * 2;
-        const distNorm = Math.pow(aRand(), 0.75);
-        const rad = distNorm * 145;
+        const distNorm = Math.pow(aRand(), 0.65);
+        const rad = distNorm * 198;
         const cx = 256 + Math.cos(ang) * rad;
         const cy = 256 + Math.sin(ang) * rad;
-        const rPuff = 28 + aRand() * 26;
+        const rx = 18 + aRand() * 20;
+        const ry = 8 + aRand() * 10;
         const topFactor = Math.max(0, Math.min(1, 1.0 - cy / 512));
-        const rr = Math.floor(155 + topFactor * 95);
-        const gg = Math.floor(175 + topFactor * 78);
-        const bb = Math.floor(145 + topFactor * 60);
-        lctx.fillStyle = `rgb(${rr}, ${gg}, ${bb})`;
-        lctx.beginPath();
-        lctx.arc(cx, cy, rPuff, 0, Math.PI * 2);
-        lctx.fill();
-      }
-      // 2. Delicate outer brush-stroke leaves for organic silhouette
-      for (let i = 0; i < 190; i++) {
-        const ang = aRand() * Math.PI * 2;
-        const distNorm = 0.35 + Math.pow(aRand(), 0.6) * 0.65;
-        const rad = distNorm * 202;
-        const cx = 256 + Math.cos(ang) * rad;
-        const cy = 256 + Math.sin(ang) * rad;
-        const rx = 20 + aRand() * 22;
-        const ry = 13 + aRand() * 14;
-        const topFactor = Math.max(0, Math.min(1, 1.0 - cy / 512));
-        const rr = Math.floor(165 + topFactor * 88 + (aRand() - 0.5) * 18);
-        const gg = Math.floor(185 + topFactor * 68 + (aRand() - 0.5) * 18);
-        const bb = Math.floor(155 + topFactor * 55);
+        const rr = Math.floor(135 + topFactor * 115 + (aRand() - 0.5) * 28);
+        const gg = Math.floor(155 + topFactor * 95 + (aRand() - 0.5) * 28);
+        const bb = Math.floor(120 + topFactor * 75);
         lctx.save();
         lctx.translate(cx, cy);
-        lctx.rotate(ang + (aRand() - 0.5) * 1.1);
+        lctx.rotate(ang + (aRand() - 0.5) * 1.5);
         lctx.fillStyle = `rgb(${Math.min(255, rr)}, ${Math.min(255, gg)}, ${Math.min(255, bb)})`;
         lctx.beginPath();
         lctx.moveTo(-rx, 0);
@@ -1048,12 +1095,14 @@
 
       const leafMat = new THREE.MeshStandardMaterial({
         map: leafTex,
+        normalMap: leafNor,
+        normalScale: new THREE.Vector2(0.45, 0.45),
         side: THREE.DoubleSide,
-        roughness: 0.82,
+        roughness: 0.68,
         metalness: 0.0,
-        alphaTest: 0.34,
-        emissive: new THREE.Color(0x3f5e3b),
-        emissiveIntensity: 0.34
+        alphaTest: 0.46,
+        emissive: new THREE.Color(0x1f301c),
+        emissiveIntensity: 0.10
       });
       leafMat.onBeforeCompile = (shader) => {
         shader.uniforms.uTime = { value: 0 };
@@ -1093,17 +1142,50 @@
         new THREE.Vector3(0.02, 12.5, 0)
       ], 0.34, 0.05, 8, 6);
 
-      const broadCount = 520, broadClusters = 14;
-      const cypressCount = 340, cypressClusters = 10;
-      const shrubCount = 850, shrubClusters = 2;
+      // Bake full 1-instance Ghibli Broadleaf Crown (6 overlapping spherical-normal puffs) -> enables 6,000+ trees at high FPS!
+      function makePuff(ox, oy, oz, sc) {
+        const g1 = new THREE.PlaneGeometry(3.8 * sc, 3.6 * sc);
+        const g2 = new THREE.PlaneGeometry(3.8 * sc, 3.6 * sc); g2.rotateY(Math.PI * 0.45); g2.rotateX(0.25);
+        const m = mergeGeos([g1, g2]);
+        const p = m.attributes.position, n = m.attributes.normal, v = new THREE.Vector3();
+        for (let i = 0; i < p.count; i++) {
+          v.fromBufferAttribute(p, i).normalize();
+          v.set(v.x, v.y * 0.65 + 0.55, v.z).normalize();
+          n.setXYZ(i, v.x, v.y, v.z);
+        }
+        m.translate(ox, oy, oz);
+        return m;
+      }
+      const broadCanopyGeo = mergeGeos([
+        makePuff( 0.0, 6.6,  0.0, 1.05),
+        makePuff( 1.9, 5.2,  1.0, 0.90),
+        makePuff(-2.0, 5.3,  0.8, 0.90),
+        makePuff( 0.8, 5.5, -1.9, 0.88),
+        makePuff(-1.2, 5.7, -1.7, 0.88),
+        makePuff( 0.0, 7.6,  0.0, 0.82)
+      ]);
+      const cypressCanopyGeo = mergeGeos([
+        makePuff(0.0, 3.6, 0.0, 0.90),
+        makePuff(0.1, 5.6, -0.1, 0.82),
+        makePuff(-0.1, 7.6, 0.1, 0.72),
+        makePuff(0.1, 9.6, 0.0, 0.58),
+        makePuff(0.0, 11.6, 0.0, 0.42)
+      ]);
+
+      const broadCount = 3600;
+      const cypressCount = 1400;
+      const shrubCount = 1200;
 
       const instTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, broadCount);
       const instCypressTrunks = new THREE.InstancedMesh(cypressTrunkGeo, trunkMat, cypressCount);
-      const totalLeaves = broadCount * broadClusters + cypressCount * cypressClusters + shrubCount * shrubClusters;
-      const instLeaves = new THREE.InstancedMesh(leafCardGeo, leafMat, totalLeaves);
+      const instBroadLeaves = new THREE.InstancedMesh(broadCanopyGeo, leafMat, broadCount);
+      const instCypressLeaves = new THREE.InstancedMesh(cypressCanopyGeo, leafMat, cypressCount);
+      const instShrubLeaves = new THREE.InstancedMesh(leafCardGeo, leafMat, shrubCount);
       instTrunks.castShadow = true; instTrunks.receiveShadow = true;
       instCypressTrunks.castShadow = true; instCypressTrunks.receiveShadow = true;
-      instLeaves.castShadow = true; instLeaves.receiveShadow = true;
+      instBroadLeaves.castShadow = true; instBroadLeaves.receiveShadow = true;
+      instCypressLeaves.castShadow = true; instCypressLeaves.receiveShadow = true;
+      instShrubLeaves.receiveShadow = true;
 
       let tSeed = 7741;
       const tRand = () => ((tSeed = (tSeed * 1664525 + 1013904223) >>> 0) / 4294967296);
@@ -1111,20 +1193,7 @@
       const yAxis = new THREE.Vector3(0, 1, 0);
       const dummy = new THREE.Object3D();
       const tintCol = new THREE.Color();
-      const clusterOffsets = [
-        [ 0.0, 6.8,  0.0], [ 2.1, 5.1,  1.0], [-2.2, 5.2,  0.8], [ 0.9, 5.5, -2.1],
-        [-1.3, 5.8, -1.8], [ 1.9, 6.3, -0.6], [-0.4, 6.9,  1.4], [ 1.1, 6.4,  1.2],
-        [-1.5, 6.2,  0.2], [ 0.0, 5.4,  1.8], [ 0.3, 6.1, -1.3], [-1.8, 4.8, -0.6],
-        [ 1.6, 4.7,  0.2], [ 0.1, 7.4, -0.2]
-      ];
-      // Vertical tapering offsets for tall slender Cypress / Poplar spires
-      const cypressOffsets = [
-        [0, 3.2, 0, 0.95], [0.2, 4.5, -0.1, 0.92], [-0.2, 5.8, 0.1, 0.88], [0.1, 7.1, 0.2, 0.82],
-        [-0.1, 8.3, -0.2, 0.74], [0.15, 9.5, 0.05, 0.65], [-0.1, 10.6, 0.1, 0.56],
-        [0.05, 11.6, -0.05, 0.46], [0, 12.5, 0, 0.36], [0, 13.3, 0, 0.25]
-      ];
 
-      // Helper to prevent trees/shrubs from clipping through cottages or aqueduct bridges
       const isClearOfBuildings = (x, y, z, minDist) => {
         if (Math.abs(z - (-60)) < 7.5 || Math.abs(z - 140) < 7.5) return false;
         const m2 = minDist * minDist;
@@ -1136,77 +1205,40 @@
         return true;
       };
 
-      // Generate 55 lush, dense forest groves across the valley and hillsides
-      const groves = [];
-      for (let g = 0; g < 55; g++) {
-        const gTheta = (g < 38) ? -Math.PI * 0.5 + (tRand() - 0.5) * 0.72 : -Math.PI + tRand() * Math.PI * 2;
-        const gZ = -280 + tRand() * 560;
-        groves.push({ theta: gTheta, z: gZ, radTheta: 0.045 + tRand() * 0.055, radZ: 18 + tRand() * 24 });
-      }
-
-      const pickGrovePos = () => {
-        const gv = groves[Math.floor(tRand() * groves.length)];
-        const ang = tRand() * Math.PI * 2;
-        const dist = Math.pow(tRand(), 0.65);
-        return {
-          theta: gv.theta + Math.cos(ang) * dist * gv.radTheta,
-          z: gv.z + Math.sin(ang) * dist * gv.radZ
-        };
+      // Continuous Dense Hillside Forest Belts across all 4 sectors + bottom valley hillsides
+      const pickForestPos = () => {
+        // 70% packed into dense continuous hillside forest belts; 30% in valley & endcap groves
+        const sectorIdx = (tRand() < 0.55) ? 3 : Math.floor(tRand() * 4); // sector 3 = -PI/2 (bottom valley)
+        const baseSector = -Math.PI + sectorIdx * (Math.PI * 0.5);
+        const side = tRand() < 0.5 ? -1 : 1;
+        const offset = (tRand() < 0.82)
+          ? side * (0.16 + Math.pow(tRand(), 0.85) * 0.52) // Dense continuous forest belts on hillsides!
+          : (tRand() - 0.5) * 0.34;
+        const theta = baseSector + offset;
+        const z = -310 + tRand() * 620;
+        return { theta, z };
       };
 
-      const pickSpringTint = (allowSakura) => {
+      const pickSpringTint = (allowSakura, z) => {
         const r = tRand();
-        if (allowSakura && r < 0.20) tintCol.setHex(0xffe6f0);
-        else if (r < 0.48) tintCol.setHex(0x6ed94c);
-        else if (r < 0.74) tintCol.setHex(0x8be858);
-        else if (r < 0.90) tintCol.setHex(0x52bd3e);
-        else tintCol.setHex(0xb4eb56);
+        // Near far endcap (z > 160), richer sakura/warm-blossom cluster like reference!
+        const sakuraProb = (z > 160) ? 0.38 : 0.16;
+        if (allowSakura && r < sakuraProb) tintCol.setHex(0xffe2ee);
+        else if (r < 0.45) tintCol.setHex(0x63cc44);
+        else if (r < 0.72) tintCol.setHex(0x80de50);
+        else if (r < 0.88) tintCol.setHex(0x47ad38);
+        else tintCol.setHex(0xa8e04e);
       };
 
-      let bPlaced = 0, cPlaced = 0, lPlaced = 0;
-      // 1. Place dense Broadleaf Oak & Sakura forest groves
-      for (let i = 0; i < broadCount * 4 && bPlaced < broadCount; i++) {
-        const { theta, z } = pickGrovePos();
-        if (getRiverFactor(theta, z) > 0.09) continue;
+      let bPlaced = 0, cPlaced = 0, sPlaced = 0;
+      // 1. Place 3,600 Broadleaf Oak & Sakura Trees
+      for (let i = 0; i < broadCount * 3 && bPlaced < broadCount; i++) {
+        const { theta, z } = pickForestPos();
+        if (getRiverFactor(theta, z) > 0.08) continue;
         const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
         const dTheta = theta - sector;
         if (Math.abs(dTheta) < 0.095) continue;
-        if (Math.abs(dTheta - (-0.06 + 0.015 * Math.sin(z * 0.02))) < 0.032) continue; // Keep footpath clear
-
-        const r = RADIUS - getTerrainHeight(theta, z);
-        const px = r * Math.cos(theta), py = r * Math.sin(theta);
-        if (!isClearOfBuildings(px, py, z, 8.2)) continue;
-
-        dummy.position.set(px, py, z);
-        upVec.set(-Math.cos(theta), -Math.sin(theta), 0);
-        dummy.quaternion.setFromUnitVectors(yAxis, upVec);
-        dummy.rotateY(tRand() * Math.PI * 2);
-        const s = 0.75 + tRand() * 0.60;
-        dummy.scale.set(s, s, s);
-        dummy.updateMatrix();
-        instTrunks.setMatrixAt(bPlaced++, dummy.matrix);
-
-        pickSpringTint(true);
-        for (const [ox, oy, oz] of clusterOffsets) {
-          const ld = dummy.clone();
-          ld.translateX(ox * s); ld.translateY(oy * s); ld.translateZ(oz * s);
-          ld.rotateY(tRand() * Math.PI);
-          ld.scale.set(s * 0.9, s * 0.9, s * 0.9);
-          ld.updateMatrix();
-          instLeaves.setMatrixAt(lPlaced, ld.matrix);
-          instLeaves.setColorAt(lPlaced, tintCol);
-          lPlaced++;
-        }
-      }
-
-      // 2. Place Tall Slender Cypress / Poplar spires
-      for (let i = 0; i < cypressCount * 4 && cPlaced < cypressCount; i++) {
-        const { theta, z } = pickGrovePos();
-        if (getRiverFactor(theta, z) > 0.09) continue;
-        const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
-        const dTheta = theta - sector;
-        if (Math.abs(dTheta) < 0.095) continue;
-        if (Math.abs(dTheta - (-0.06 + 0.015 * Math.sin(z * 0.02))) < 0.028) continue;
+        if (Math.abs(dTheta - (-0.06 + 0.015 * Math.sin(z * 0.02))) < 0.032) continue;
 
         const r = RADIUS - getTerrainHeight(theta, z);
         const px = r * Math.cos(theta), py = r * Math.sin(theta);
@@ -1216,28 +1248,46 @@
         upVec.set(-Math.cos(theta), -Math.sin(theta), 0);
         dummy.quaternion.setFromUnitVectors(yAxis, upVec);
         dummy.rotateY(tRand() * Math.PI * 2);
+        const s = 0.75 + tRand() * 0.65;
+        dummy.scale.set(s, s, s);
+        dummy.updateMatrix();
+        instTrunks.setMatrixAt(bPlaced, dummy.matrix);
+        instBroadLeaves.setMatrixAt(bPlaced, dummy.matrix);
+        pickSpringTint(true, z);
+        instBroadLeaves.setColorAt(bPlaced, tintCol);
+        bPlaced++;
+      }
+
+      // 2. Place 1,400 Tall Slender Cypress / Poplar Spires
+      for (let i = 0; i < cypressCount * 3 && cPlaced < cypressCount; i++) {
+        const { theta, z } = pickForestPos();
+        if (getRiverFactor(theta, z) > 0.08) continue;
+        const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
+        const dTheta = theta - sector;
+        if (Math.abs(dTheta) < 0.095) continue;
+        if (Math.abs(dTheta - (-0.06 + 0.015 * Math.sin(z * 0.02))) < 0.028) continue;
+
+        const r = RADIUS - getTerrainHeight(theta, z);
+        const px = r * Math.cos(theta), py = r * Math.sin(theta);
+        if (!isClearOfBuildings(px, py, z, 7.4)) continue;
+
+        dummy.position.set(px, py, z);
+        upVec.set(-Math.cos(theta), -Math.sin(theta), 0);
+        dummy.quaternion.setFromUnitVectors(yAxis, upVec);
+        dummy.rotateY(tRand() * Math.PI * 2);
         const s = 0.85 + tRand() * 0.50;
         dummy.scale.set(s, s, s);
         dummy.updateMatrix();
-        instCypressTrunks.setMatrixAt(cPlaced++, dummy.matrix);
-
-        tintCol.setHex(tRand() < 0.5 ? 0x4db33b : 0x62cc46);
-        for (const [ox, oy, oz, cs] of cypressOffsets) {
-          const ld = dummy.clone();
-          ld.translateX(ox * s); ld.translateY(oy * s); ld.translateZ(oz * s);
-          ld.rotateY(tRand() * Math.PI);
-          ld.scale.set(s * cs, s * cs * 1.15, s * cs);
-          ld.updateMatrix();
-          instLeaves.setMatrixAt(lPlaced, ld.matrix);
-          instLeaves.setColorAt(lPlaced, tintCol);
-          lPlaced++;
-        }
+        instCypressTrunks.setMatrixAt(cPlaced, dummy.matrix);
+        instCypressLeaves.setMatrixAt(cPlaced, dummy.matrix);
+        tintCol.setHex(tRand() < 0.5 ? 0x47ab38 : 0x5cc444);
+        instCypressLeaves.setColorAt(cPlaced, tintCol);
+        cPlaced++;
       }
 
-      // 3. Place Dense Low Flowering Shrubs & Bushes around groves & riverbanks
-      let sPlaced = 0;
+      // 3. Place 1,200 Low Flowering Shrubs & Bushes
       for (let i = 0; i < shrubCount * 3 && sPlaced < shrubCount; i++) {
-        const { theta, z } = pickGrovePos();
+        const { theta, z } = pickForestPos();
         if (getRiverFactor(theta, z) > 0.12) continue;
         const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
         const dTheta = theta - sector;
@@ -1252,31 +1302,68 @@
         upVec.set(-Math.cos(theta), -Math.sin(theta), 0);
         dummy.quaternion.setFromUnitVectors(yAxis, upVec);
         dummy.rotateY(tRand() * Math.PI * 2);
-        const s = 0.45 + tRand() * 0.48;
-        pickSpringTint(true);
-        for (let k = 0; k < shrubClusters; k++) {
-          const ld = dummy.clone();
-          ld.translateX((tRand() - 0.5) * 1.2);
-          ld.translateY(0.65 * s + k * 0.35 * s);
-          ld.translateZ((tRand() - 0.5) * 1.2);
-          ld.rotateY(tRand() * Math.PI);
-          ld.scale.set(s, s * 0.78, s);
-          ld.updateMatrix();
-          instLeaves.setMatrixAt(lPlaced, ld.matrix);
-          instLeaves.setColorAt(lPlaced, tintCol);
-          lPlaced++;
-        }
+        const s = 0.50 + tRand() * 0.50;
+        dummy.translateY(0.75 * s);
+        dummy.scale.set(s, s * 0.78, s);
+        dummy.updateMatrix();
+        instShrubLeaves.setMatrixAt(sPlaced, dummy.matrix);
+        pickSpringTint(true, z);
+        instShrubLeaves.setColorAt(sPlaced, tintCol);
         sPlaced++;
       }
 
       instTrunks.count = bPlaced;
       instCypressTrunks.count = cPlaced;
-      instLeaves.count = lPlaced;
+      instBroadLeaves.count = bPlaced;
+      instCypressLeaves.count = cPlaced;
+      instShrubLeaves.count = sPlaced;
       instTrunks.instanceMatrix.needsUpdate = true;
       instCypressTrunks.instanceMatrix.needsUpdate = true;
-      instLeaves.instanceMatrix.needsUpdate = true;
-      if (instLeaves.instanceColor) instLeaves.instanceColor.needsUpdate = true;
-      scene.add(instTrunks, instCypressTrunks, instLeaves);
+      instBroadLeaves.instanceMatrix.needsUpdate = true;
+      instCypressLeaves.instanceMatrix.needsUpdate = true;
+      instShrubLeaves.instanceMatrix.needsUpdate = true;
+      if (instBroadLeaves.instanceColor) instBroadLeaves.instanceColor.needsUpdate = true;
+      if (instCypressLeaves.instanceColor) instCypressLeaves.instanceColor.needsUpdate = true;
+      if (instShrubLeaves.instanceColor) instShrubLeaves.instanceColor.needsUpdate = true;
+      scene.add(instTrunks, instCypressTrunks, instBroadLeaves, instCypressLeaves, instShrubLeaves);
+
+      // Realistic Multi-Layered Billowing Cumulus Clouds inside the Cylinder Sky
+      const cloudCanvas = document.createElement('canvas');
+      cloudCanvas.width = 512; cloudCanvas.height = 256;
+      const cctx = cloudCanvas.getContext('2d');
+      cctx.clearRect(0, 0, 512, 256);
+      let clSeed = 5151;
+      const clRand = () => ((clSeed = (clSeed * 1664525 + 1013904223) >>> 0) / 4294967296);
+      // Paint layered cauliflower cumulus puffs (shaded cool underside -> bright sunlit cream-white top)
+      for (let i = 0; i < 42; i++) {
+        const t = i / 42;
+        const cx = 90 + clRand() * 332;
+        const cy = 175 - t * 95 + (clRand() - 0.5) * 28;
+        const rad = 26 + clRand() * 38;
+        const cg = cctx.createRadialGradient(cx, cy - rad * 0.25, rad * 0.1, cx, cy, rad);
+        const topLight = 0.55 + 0.45 * t;
+        const rC = Math.floor(225 + 30 * topLight), gC = Math.floor(230 + 23 * topLight), bC = Math.floor(242 + 10 * topLight);
+        cg.addColorStop(0.0, `rgba(${rC}, ${gC}, ${bC}, 0.85)`);
+        cg.addColorStop(0.65, `rgba(${rC - 14}, ${gC - 12}, ${bC - 6}, 0.45)`);
+        cg.addColorStop(1.0, `rgba(${rC - 20}, ${gC - 16}, ${bC - 8}, 0.0)`);
+        cctx.fillStyle = cg;
+        cctx.beginPath(); cctx.arc(cx, cy, rad, 0, Math.PI * 2); cctx.fill();
+      }
+      const cloudTex = new THREE.CanvasTexture(cloudCanvas);
+      cloudTex.colorSpace = THREE.SRGBColorSpace;
+      const cloudMat = new THREE.SpriteMaterial({ map: cloudTex, transparent: true, opacity: 0.82, alphaTest: 0.04, depthWrite: false });
+      const cloudSprites = [];
+      for (let i = 0; i < 14; i++) {
+        const cAng = tRand() * Math.PI * 2;
+        const cR = 24 + tRand() * 32;
+        const cz = -260 + tRand() * 520;
+        const baseW = 24 + tRand() * 18;
+        const sp = new THREE.Sprite(cloudMat);
+        sp.position.set(cR * Math.cos(cAng), cR * Math.sin(cAng), cz);
+        sp.scale.set(baseW, baseW * 0.48, 1);
+        scene.add(sp);
+        cloudSprites.push({ sp, speed: 0.9 + tRand() * 1.1 });
+      }
 
       // =======================================================================
       // 7. Camera, Input, 90s Spline & Recording
@@ -1342,8 +1429,8 @@
 
       const posCurve = new THREE.CatmullRomCurve3([
         new THREE.Vector3(  0.0,  10.0, -210.0),
-        new THREE.Vector3( -6.0, -24.0, -135.0),
-        new THREE.Vector3( -4.0, -84.0,  -75.0),
+        new THREE.Vector3( -4.0, -16.0, -110.0),
+        new THREE.Vector3( -4.0, -52.0,  -45.0),
         new THREE.Vector3( -5.0, -86.0,    0.0),
         new THREE.Vector3( -2.0, -84.0,   85.0),
         new THREE.Vector3(  0.0, -78.0,  165.0),
@@ -1403,8 +1490,8 @@
         solarMat.uniforms.uDusk.value = duskVal;
         spaceMat.uniforms.uNight.value = nightVal;
 
-        sunLight.intensity = lerp(lerp(2.40, 0.28, nightVal), 2.3, duskVal * 0.6);
-        sunLight.color.setRGB(lerp(lerp(1.0, 0.35, nightVal), 1.0, duskVal), lerp(lerp(0.92, 0.45, nightVal), 0.45, duskVal), lerp(lerp(0.78, 0.85, nightVal), 0.22, duskVal));
+        sunLight.intensity = lerp(lerp(2.55, 0.28, nightVal), 2.4, duskVal * 0.6);
+        sunLight.color.setRGB(lerp(lerp(1.0, 0.35, nightVal), 1.0, duskVal), lerp(lerp(0.88, 0.45, nightVal), 0.45, duskVal), lerp(lerp(0.68, 0.85, nightVal), 0.22, duskVal));
         hemiLight.intensity = lerp(0.68, 0.15, nightVal);
         scene.environmentIntensity = lerp(0.65, 0.12, nightVal);
 
@@ -1417,6 +1504,11 @@
         if (grassMat && grassMat.userData.shader) grassMat.userData.shader.uniforms.uTime.value = t;
         if (leafMat && leafMat.userData.shader) leafMat.userData.shader.uniforms.uTime.value = t;
         filmLensPass.uniforms.uTime.value = t;
+        cloudMat.opacity = lerp(0.78, 0.16, nightVal);
+        for (const cl of cloudSprites) {
+          cl.sp.position.z += cl.speed * dt;
+          if (cl.sp.position.z > 280) cl.sp.position.z = -280;
+        }
 
         // Update animated GLB Stork flocks (always upright with world +Y up)
         for (const m of mixers) m.update(dt);
@@ -1454,9 +1546,11 @@
             tmpPos.lerp(cP, trackBlend);
             tmpLook.lerp(cL, trackBlend);
           }
-          camera.position.lerp(tmpPos, Math.min(1, dt * 4.5));
+          camera.position.lerp(tmpPos, Math.min(1, dt * 1.6));
+          if (!camera.userData.smoothLook) camera.userData.smoothLook = tmpLook.clone();
+          camera.userData.smoothLook.lerp(tmpLook, Math.min(1, dt * 1.6));
           camera.up.set(0, 1, 0);
-          camera.lookAt(tmpLook);
+          camera.lookAt(camera.userData.smoothLook);
           fadeOverlayEl.style.opacity = Math.max(smoothstep(0.96, 0.998, u), 1.0 - smoothstep(0.0, 0.025, u)).toFixed(3);
         } else {
           const speed = (keys['shift'] ? 28 : 45) * dt;
