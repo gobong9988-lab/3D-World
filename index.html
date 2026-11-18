@@ -43,7 +43,7 @@
     }
     #fps { margin-top: 4px; font-size: 11px; color: rgba(200, 225, 255, 0.72); font-variant-numeric: tabular-nums; }
     #fade-overlay {
-      position: fixed; inset: 0; background: #04070f;
+      position: fixed; inset: 0; background: #000000;
       opacity: 0; pointer-events: none; z-index: 5;
     }
     #loading {
@@ -121,7 +121,7 @@
       const RADIUS = 100.0;
       const LENGTH = 800.0;
       const HALF_LENGTH = LENGTH * 0.5;
-      const LOOP_DURATION = 135.0;
+      const LOOP_DURATION = 150.0;
 
       // =======================================================================
       // Renderer, Scene, Camera, Post-Processing (HDR Bloom + ACES Filmic)
@@ -142,7 +142,7 @@
       scene.background = dayFogCol.clone();
       scene.fog = new THREE.FogExp2(dayFogCol.getHex(), 0.0024);
 
-      const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.3, 1200);
+      const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.3, 1600);
 
       const composer = new EffectComposer(renderer);
       composer.addPass(new RenderPass(scene, camera));
@@ -190,8 +190,9 @@
             // Soft optical lens vignette
             col *= 1.0 - r2 * 0.28;
 
-            // Fine analog 35mm film grain
-            float grain = (hash(vUv * uRes + fract(uTime * 17.3) * 100.0) - 0.5) * 0.022;
+            // Fine analog 35mm film grain (suppressed in dark space sky to avoid static noise on Saturn)
+            float luma = dot(col, vec3(0.299, 0.587, 0.114));
+            float grain = (hash(vUv * uRes + fract(uTime * 17.3) * 100.0) - 0.5) * 0.018 * smoothstep(0.04, 0.35, luma);
             col += grain;
             gl_FragColor = vec4(max(col, 0.0), 1.0);
           }
@@ -236,13 +237,15 @@
       const sunLight = new THREE.DirectionalLight(0xffe9c4, 2.85);
       sunLight.castShadow = true;
       sunLight.shadow.mapSize.set(2048, 2048);
-      sunLight.shadow.camera.left = -110;
-      sunLight.shadow.camera.right = 110;
-      sunLight.shadow.camera.top = 110;
-      sunLight.shadow.camera.bottom = -110;
+      sunLight.shadow.camera.left = -240;
+      sunLight.shadow.camera.right = 240;
+      sunLight.shadow.camera.top = 240;
+      sunLight.shadow.camera.bottom = -240;
       sunLight.shadow.camera.near = 10;
-      sunLight.shadow.camera.far = 320;
-      sunLight.shadow.bias = -0.0005;
+      sunLight.shadow.camera.far = 650;
+      sunLight.shadow.bias = -0.0006;
+      sunLight.target.position.set(0, -35, 0);
+      sunLight.position.copy(sunLight.target.position).addScaledVector(sunDir, 240);
       scene.add(sunLight);
       scene.add(sunLight.target);
 
@@ -264,10 +267,13 @@
       }
 
       function getRiverFactor(theta, z) {
-        const sector = Math.round(theta / (Math.PI * 0.5)) * (Math.PI * 0.5);
-        const dTheta = theta - sector;
-        const riverCenter = 0.085 + 0.035 * Math.sin(z * 0.022) + 0.015 * Math.cos(z * 0.048);
-        return 1.0 - smoothstep(0.038, 0.068, Math.abs(dTheta - riverCenter));
+        const dTheta = theta - (-Math.PI * 0.5);
+        if (Math.abs(dTheta) > 0.45) return 0.0; // Single natural river in bottom valley only
+        const riverCenter = 0.08 + 0.055 * Math.sin(z * 0.015) + 0.028 * Math.cos(z * 0.032);
+        const lake1 = Math.exp(-Math.pow((z + 25) / 42, 2)) * 0.085;
+        const lake2 = Math.exp(-Math.pow((z - 125) / 48, 2)) * 0.095;
+        const halfW = 0.055 + lake1 + lake2 + 0.015 * Math.sin(z * 0.04);
+        return 1.0 - smoothstep(halfW - 0.015, halfW + 0.035, Math.abs(dTheta - riverCenter));
       }
 
       function getTerrainHeight(theta, z) {
@@ -347,7 +353,7 @@
 
             let cr = lerp(0.58, 0.76, meadowVar), cg = lerp(1.12, 1.30, meadowVar), cb = lerp(0.42, 0.52, meadowVar);
             if (pathMask > 0.05) { cr = lerp(cr, 1.38, pathMask * 0.92); cg = lerp(cg, 1.08, pathMask * 0.92); cb = lerp(cb, 0.72, pathMask * 0.92); }
-            if (river > 0.05) { cr = lerp(cr, 0.85, river * 0.8); cg = lerp(cg, 0.78, river * 0.8); cb = lerp(cb, 0.62, river * 0.8); }
+            if (river > 0.02) { cr = lerp(cr, 1.02, river * 0.85); cg = lerp(cg, 0.92, river * 0.85); cb = lerp(cb, 0.72, river * 0.85); }
             col[idx * 3] = cr; col[idx * 3 + 1] = cg; col[idx * 3 + 2] = cb;
           }
         }
@@ -402,15 +408,15 @@
         wGeo.computeVertexNormals();
 
         const waterMat = new THREE.MeshStandardMaterial({
-          color: 0x1b7a9c,
+          color: 0x225563,
           normalMap: waterNor,
-          normalScale: new THREE.Vector2(1.4, 1.4),
+          normalScale: new THREE.Vector2(0.75, 0.75),
           side: THREE.DoubleSide,
-          roughness: 0.06,
-          metalness: 0.55,
-          envMapIntensity: 1.5,
-          emissive: new THREE.Color(0x0d3d52),
-          emissiveIntensity: 0.24
+          transparent: true,
+          opacity: 0.84,
+          roughness: 0.24,
+          metalness: 0.20,
+          envMapIntensity: 0.95
         });
         const waterMesh = new THREE.Mesh(wGeo, waterMat);
         waterMesh.receiveShadow = true;
@@ -685,9 +691,9 @@
               float ring = smoothstep(0.03, 0.06, abs(fract(r * 7.0) - 0.5));
               float spoke = smoothstep(0.02, 0.05, abs(fract(ang * 16.0 / 6.2831853) - 0.5));
               float glass = ring * mix(1.0, spoke, smoothstep(0.08, 0.25, r));
-              vec3 frameCol = vec3(0.24, 0.28, 0.34);
-              vec3 tintCol = vec3(0.18, 0.28, 0.44);
-              float alpha = mix(1.0, 0.14 - uNight * 0.08, glass);
+              vec3 frameCol = vec3(0.22, 0.26, 0.32);
+              vec3 tintCol = vec3(0.08, 0.14, 0.24);
+              float alpha = mix(1.0, 0.04, glass);
               gl_FragColor = vec4(mix(frameCol, tintCol, glass), alpha);
             }
           `
@@ -695,19 +701,20 @@
         const spaceDome = new THREE.Mesh(new THREE.CircleGeometry(RADIUS + 2, 64), spaceMat);
         spaceDome.position.z = -HALF_LENGTH;
         spaceDome.rotation.y = Math.PI;
+        spaceDome.renderOrder = 10;
         scene.add(spaceDome);
 
         // Deep Space Backdrop outside -Z Dome (Real Milky Way + 3D Saturn + Rings)
         const spaceGroup = new THREE.Group();
-        spaceGroup.position.set(0, 0, -HALF_LENGTH - 260);
+        spaceGroup.position.set(0, 0, -HALF_LENGTH - 320);
         const starSphere = new THREE.Mesh(
-          new THREE.SphereGeometry(480, 40, 28),
+          new THREE.SphereGeometry(310, 40, 28),
           new THREE.MeshBasicMaterial({ map: milkyWayTex, side: THREE.BackSide, fog: false })
         );
         spaceGroup.add(starSphere);
 
         const saturnGroup = new THREE.Group();
-        saturnGroup.position.set(22, 48, -110);
+        saturnGroup.position.set(16, 38, -80);
         saturnGroup.rotation.set(0.32, 0.4, -0.35);
         const saturnMesh = new THREE.Mesh(
           new THREE.SphereGeometry(54, 48, 32),
@@ -736,6 +743,8 @@
           new THREE.MeshStandardMaterial({
             map: saturnRingTex,
             transparent: true,
+            depthWrite: false,
+            alphaTest: 0.04,
             side: THREE.DoubleSide,
             roughness: 0.65,
             emissive: new THREE.Color(0x8c7b60),
@@ -747,14 +756,70 @@
         saturnGroup.add(saturnRing);
         spaceGroup.add(saturnGroup);
 
+        // 2,200 Crisp 3D Twinkling Stars outside the Glass Dome
+        const starCount = 2200;
+        const sPos = new Float32Array(starCount * 3);
+        const sCol = new Float32Array(starCount * 3);
+        const sPhase = new Float32Array(starCount);
+        const sSize = new Float32Array(starCount);
+        let stSeed = 9941;
+        const stRand = () => ((stSeed = (stSeed * 1664525 + 1013904223) >>> 0) / 4294967296);
+        for (let i = 0; i < starCount; i++) {
+          const u = stRand() * 2 - 1;
+          const phi = stRand() * Math.PI * 2;
+          const rad = 240 + stRand() * 55;
+          const sq = Math.sqrt(Math.max(0, 1 - u * u));
+          sPos[i * 3] = rad * sq * Math.cos(phi);
+          sPos[i * 3 + 1] = rad * sq * Math.sin(phi);
+          sPos[i * 3 + 2] = rad * u;
+          const tint = stRand();
+          sCol[i * 3]     = tint < 0.3 ? 0.80 : 1.0;
+          sCol[i * 3 + 1] = tint < 0.3 ? 0.90 : (tint < 0.7 ? 0.96 : 0.88);
+          sCol[i * 3 + 2] = tint > 0.7 ? 0.75 : 1.0;
+          sPhase[i] = stRand() * 6.283;
+          sSize[i] = 1.6 + Math.pow(stRand(), 2.2) * 4.2;
+        }
+        const starGeo = new THREE.BufferGeometry();
+        starGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
+        starGeo.setAttribute('aColor', new THREE.BufferAttribute(sCol, 3));
+        starGeo.setAttribute('aPhase', new THREE.BufferAttribute(sPhase, 1));
+        starGeo.setAttribute('aSize', new THREE.BufferAttribute(sSize, 1));
+        const starMat = new THREE.ShaderMaterial({
+          uniforms: { uTime: { value: 0 } },
+          transparent: true,
+          depthWrite: false,
+          fog: false,
+          blending: THREE.AdditiveBlending,
+          vertexShader: `
+            attribute vec3 aColor; attribute float aPhase; attribute float aSize;
+            uniform float uTime; varying vec3 vCol; varying float vTwinkle;
+            void main() {
+              vCol = aColor;
+              vTwinkle = 0.45 + 0.55 * sin(uTime * (1.8 + fract(aPhase) * 2.5) + aPhase);
+              vec4 mv = modelViewMatrix * vec4(position, 1.0);
+              gl_PointSize = aSize * (300.0 / max(1.0, -mv.z));
+              gl_Position = projectionMatrix * mv;
+            }
+          `,
+          fragmentShader: `
+            varying vec3 vCol; varying float vTwinkle;
+            void main() {
+              float d = length(gl_PointCoord - 0.5);
+              float a = smoothstep(0.5, 0.05, d) * vTwinkle;
+              gl_FragColor = vec4(vCol * 1.35, a);
+            }
+          `
+        });
+        spaceGroup.add(new THREE.Points(starGeo, starMat));
+
         const spaceSun = new THREE.DirectionalLight(0xfff2dc, 2.4);
         spaceSun.position.set(180, 120, 140);
         spaceGroup.add(spaceSun);
         scene.add(spaceGroup);
 
-        return { solarMat, spaceMat };
+        return { solarMat, spaceMat, starMat };
       }
-      const { solarMat, spaceMat } = buildObeliskAndDomes();
+      const { solarMat, spaceMat, starMat } = buildObeliskAndDomes();
 
       // =======================================================================
       // 4. Village Cottages (Cozy Stone & Clay Roof Cottages + Night Glow)
@@ -982,29 +1047,24 @@
       const leafNor  = loadTex('./assets/island_tree_01/textures/island_tree_01_leaves_nor_gl_1k.jpg', 1, 1, false);
       const trunkMat = new THREE.MeshStandardMaterial({ map: barkDiff, normalMap: barkNor, roughness: 0.90 });
 
-      // Generate crisp, detailed individual leaf-cluster RGBA texture (no blurry circles)
+      // Generate seamless painterly leaf-cluster texture (opaque base + 450 layered leaves for rich 3D canopy detail)
       const leafCanvas = document.createElement('canvas');
       leafCanvas.width = 512; leafCanvas.height = 512;
       const lctx = leafCanvas.getContext('2d');
-      lctx.clearRect(0, 0, 512, 512);
+      lctx.fillStyle = '#8aa87c';
+      lctx.fillRect(0, 0, 512, 512);
       let aSeed = 31337;
       const aRand = () => ((aSeed = (aSeed * 1664525 + 1013904223) >>> 0) / 4294967296);
-      for (let i = 0; i < 320; i++) {
-        const ang = aRand() * Math.PI * 2;
-        const distNorm = Math.pow(aRand(), 0.65);
-        const rad = distNorm * 198;
-        const cx = 256 + Math.cos(ang) * rad;
-        const cy = 256 + Math.sin(ang) * rad;
-        const rx = 18 + aRand() * 20;
+      for (let i = 0; i < 480; i++) {
+        const cx = aRand() * 512;
+        const cy = aRand() * 512;
+        const rx = 14 + aRand() * 18;
         const ry = 8 + aRand() * 10;
-        const topFactor = Math.max(0, Math.min(1, 1.0 - cy / 512));
-        const rr = Math.floor(135 + topFactor * 115 + (aRand() - 0.5) * 28);
-        const gg = Math.floor(155 + topFactor * 95 + (aRand() - 0.5) * 28);
-        const bb = Math.floor(120 + topFactor * 75);
+        const bright = 145 + Math.floor(aRand() * 100);
         lctx.save();
         lctx.translate(cx, cy);
-        lctx.rotate(ang + (aRand() - 0.5) * 1.5);
-        lctx.fillStyle = `rgb(${Math.min(255, rr)}, ${Math.min(255, gg)}, ${Math.min(255, bb)})`;
+        lctx.rotate(aRand() * Math.PI * 2);
+        lctx.fillStyle = `rgb(${Math.min(255, bright - 8)}, ${Math.min(255, bright + 8)}, ${Math.max(100, bright - 22)})`;
         lctx.beginPath();
         lctx.moveTo(-rx, 0);
         lctx.quadraticCurveTo(0, -ry, rx, 0);
@@ -1013,24 +1073,35 @@
         lctx.restore();
       }
       const leafTex = new THREE.CanvasTexture(leafCanvas);
+      leafTex.wrapS = leafTex.wrapT = THREE.RepeatWrapping;
+      leafTex.repeat.set(2, 2);
       leafTex.colorSpace = THREE.SRGBColorSpace;
 
-      // Helper to merge indexed BufferGeometries
+      // Helper to merge indexed or non-indexed BufferGeometries
       function mergeGeos(geos) {
         let totalVerts = 0, totalIdx = 0;
-        for (const g of geos) { totalVerts += g.attributes.position.count; totalIdx += g.index.count; }
+        for (const g of geos) {
+          totalVerts += g.attributes.position.count;
+          totalIdx += g.index ? g.index.count : g.attributes.position.count;
+        }
         const pos = new Float32Array(totalVerts * 3);
         const norm = new Float32Array(totalVerts * 3);
         const uv = new Float32Array(totalVerts * 2);
         const idx = new Uint32Array(totalIdx);
         let vOff = 0, iOff = 0;
         for (const g of geos) {
+          const vc = g.attributes.position.count;
           pos.set(g.attributes.position.array, vOff * 3);
           norm.set(g.attributes.normal.array, vOff * 3);
           uv.set(g.attributes.uv.array, vOff * 2);
-          for (let j = 0; j < g.index.count; j++) idx[iOff + j] = g.index.array[j] + vOff;
-          vOff += g.attributes.position.count;
-          iOff += g.index.count;
+          if (g.index) {
+            for (let j = 0; j < g.index.count; j++) idx[iOff + j] = g.index.array[j] + vOff;
+            iOff += g.index.count;
+          } else {
+            for (let j = 0; j < vc; j++) idx[iOff + j] = j + vOff;
+            iOff += vc;
+          }
+          vOff += vc;
         }
         const out = new THREE.BufferGeometry();
         out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -1078,31 +1149,31 @@
       ];
       const trunkGeo = mergeGeos(trunkParts);
 
-      // Build 4 intersecting tilted foliage cards with upward-biased spherical normals for billowing Ghibli clouds
-      const c1 = new THREE.PlaneGeometry(3.9, 3.7);
-      const c2 = new THREE.PlaneGeometry(3.9, 3.7); c2.rotateY(Math.PI * 0.25); c2.rotateX(0.30);
-      const c3 = new THREE.PlaneGeometry(3.9, 3.7); c3.rotateY(Math.PI * 0.55); c3.rotateZ(-0.28);
-      const c4 = new THREE.PlaneGeometry(3.9, 3.7); c4.rotateX(Math.PI * 0.38); c4.rotateY(-0.35);
-      const leafCardGeo = mergeGeos([c1, c2, c3, c4]);
-      const lPos = leafCardGeo.attributes.position;
-      const lNorm = leafCardGeo.attributes.normal;
-      const tmpN = new THREE.Vector3();
-      for (let i = 0; i < lPos.count; i++) {
-        tmpN.fromBufferAttribute(lPos, i).normalize();
-        tmpN.set(tmpN.x, tmpN.y * 0.65 + 0.55, tmpN.z).normalize();
-        lNorm.setXYZ(i, tmpN.x, tmpN.y, tmpN.z);
+      // Helper to build organic sculpted 3D foliage lobes (clean, cohesive 3D volume with zero jagged X-card seams)
+      function makeLobe(ox, oy, oz, rx, ry, rz) {
+        const g = new THREE.IcosahedronGeometry(1.0, 1);
+        const p = g.attributes.position, n = g.attributes.normal, v = new THREE.Vector3();
+        for (let i = 0; i < p.count; i++) {
+          v.fromBufferAttribute(p, i);
+          const bump = 1.0 + 0.14 * Math.sin(v.x * 4.7 + ox) * Math.cos(v.y * 5.3 + oy) + 0.10 * Math.sin(v.z * 6.1 + oz);
+          v.set(v.x * rx * bump, v.y * ry * bump, v.z * rz * bump);
+          p.setXYZ(i, v.x + ox, v.y + oy, v.z + oz);
+          v.normalize();
+          v.set(v.x, v.y * 0.7 + 0.45, v.z).normalize();
+          n.setXYZ(i, v.x, v.y, v.z);
+        }
+        return g;
       }
+      const leafCardGeo = mergeGeos([makeLobe(0, 0, 0, 1.35, 0.95, 1.30), makeLobe(0.65, 0.25, 0.4, 1.0, 0.75, 0.95)]);
 
       const leafMat = new THREE.MeshStandardMaterial({
         map: leafTex,
         normalMap: leafNor,
-        normalScale: new THREE.Vector2(0.45, 0.45),
-        side: THREE.DoubleSide,
-        roughness: 0.68,
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        roughness: 0.78,
         metalness: 0.0,
-        alphaTest: 0.46,
-        emissive: new THREE.Color(0x1f301c),
-        emissiveIntensity: 0.10
+        emissive: new THREE.Color(0x283d22),
+        emissiveIntensity: 0.16
       });
       leafMat.onBeforeCompile = (shader) => {
         shader.uniforms.uTime = { value: 0 };
@@ -1114,9 +1185,9 @@
           '#include <begin_vertex>',
           `
           #include <begin_vertex>
-          vCrownH = clamp(position.y / 1.9 + 0.5, 0.0, 1.0);
+          vCrownH = clamp((position.y - 3.5) / 5.5, 0.0, 1.0);
           vec4 instP = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
-          float sway = sin(uTime * 1.35 + instP.x * 0.22 + instP.z * 0.18) * 0.14;
+          float sway = sin(uTime * 1.3 + instP.x * 0.20 + instP.z * 0.18) * 0.10;
           transformed.x += sway * vCrownH;
           transformed.z += sway * 0.7 * vCrownH;
           `
@@ -1127,8 +1198,7 @@
           '#include <color_fragment>',
           `
           #include <color_fragment>
-          // Ghibli painterly gradient: cool emerald-teal shadow base -> warm sunlit cream-gold crown
-          vec3 ghibliTint = mix(vec3(0.68, 0.86, 0.78), vec3(1.16, 1.15, 0.86), smoothstep(0.15, 0.92, vCrownH));
+          vec3 ghibliTint = mix(vec3(0.72, 0.88, 0.80), vec3(1.16, 1.15, 0.88), smoothstep(0.10, 0.90, vCrownH));
           diffuseColor.rgb *= ghibliTint;
           `
         );
@@ -1142,39 +1212,24 @@
         new THREE.Vector3(0.02, 12.5, 0)
       ], 0.34, 0.05, 8, 6);
 
-      // Bake full 1-instance Ghibli Broadleaf Crown (6 overlapping spherical-normal puffs) -> enables 6,000+ trees at high FPS!
-      function makePuff(ox, oy, oz, sc) {
-        const g1 = new THREE.PlaneGeometry(3.8 * sc, 3.6 * sc);
-        const g2 = new THREE.PlaneGeometry(3.8 * sc, 3.6 * sc); g2.rotateY(Math.PI * 0.45); g2.rotateX(0.25);
-        const m = mergeGeos([g1, g2]);
-        const p = m.attributes.position, n = m.attributes.normal, v = new THREE.Vector3();
-        for (let i = 0; i < p.count; i++) {
-          v.fromBufferAttribute(p, i).normalize();
-          v.set(v.x, v.y * 0.65 + 0.55, v.z).normalize();
-          n.setXYZ(i, v.x, v.y, v.z);
-        }
-        m.translate(ox, oy, oz);
-        return m;
-      }
+      // Sculpted 5-lobe Broadleaf Crown & 4-tier Cypress Spire
       const broadCanopyGeo = mergeGeos([
-        makePuff( 0.0, 6.6,  0.0, 1.05),
-        makePuff( 1.9, 5.2,  1.0, 0.90),
-        makePuff(-2.0, 5.3,  0.8, 0.90),
-        makePuff( 0.8, 5.5, -1.9, 0.88),
-        makePuff(-1.2, 5.7, -1.7, 0.88),
-        makePuff( 0.0, 7.6,  0.0, 0.82)
+        makeLobe( 0.0, 6.7,  0.0, 2.55, 1.65, 2.45),
+        makeLobe( 2.0, 5.4,  1.1, 1.85, 1.35, 1.85),
+        makeLobe(-2.1, 5.5,  0.8, 1.90, 1.35, 1.80),
+        makeLobe( 0.7, 5.6, -2.0, 1.85, 1.30, 1.85),
+        makeLobe(-1.2, 5.8, -1.7, 1.80, 1.30, 1.75)
       ]);
       const cypressCanopyGeo = mergeGeos([
-        makePuff(0.0, 3.6, 0.0, 0.90),
-        makePuff(0.1, 5.6, -0.1, 0.82),
-        makePuff(-0.1, 7.6, 0.1, 0.72),
-        makePuff(0.1, 9.6, 0.0, 0.58),
-        makePuff(0.0, 11.6, 0.0, 0.42)
+        makeLobe(0.0,  4.4,  0.0, 1.55, 2.15, 1.55),
+        makeLobe(0.1,  7.0, -0.1, 1.30, 2.00, 1.30),
+        makeLobe(-0.1, 9.4,  0.1, 1.00, 1.80, 1.00),
+        makeLobe(0.0, 11.6,  0.0, 0.65, 1.50, 0.65)
       ]);
 
-      const broadCount = 3600;
-      const cypressCount = 1400;
-      const shrubCount = 1200;
+      const broadCount = 2400;
+      const cypressCount = 950;
+      const shrubCount = 850;
 
       const instTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, broadCount);
       const instCypressTrunks = new THREE.InstancedMesh(cypressTrunkGeo, trunkMat, cypressCount);
@@ -1327,42 +1382,47 @@
       if (instShrubLeaves.instanceColor) instShrubLeaves.instanceColor.needsUpdate = true;
       scene.add(instTrunks, instCypressTrunks, instBroadLeaves, instCypressLeaves, instShrubLeaves);
 
-      // Realistic Multi-Layered Billowing Cumulus Clouds inside the Cylinder Sky
-      const cloudCanvas = document.createElement('canvas');
-      cloudCanvas.width = 512; cloudCanvas.height = 256;
-      const cctx = cloudCanvas.getContext('2d');
-      cctx.clearRect(0, 0, 512, 256);
-      let clSeed = 5151;
-      const clRand = () => ((clSeed = (clSeed * 1664525 + 1013904223) >>> 0) / 4294967296);
-      // Paint layered cauliflower cumulus puffs (shaded cool underside -> bright sunlit cream-white top)
-      for (let i = 0; i < 42; i++) {
-        const t = i / 42;
-        const cx = 90 + clRand() * 332;
-        const cy = 175 - t * 95 + (clRand() - 0.5) * 28;
-        const rad = 26 + clRand() * 38;
-        const cg = cctx.createRadialGradient(cx, cy - rad * 0.25, rad * 0.1, cx, cy, rad);
-        const topLight = 0.55 + 0.45 * t;
-        const rC = Math.floor(225 + 30 * topLight), gC = Math.floor(230 + 23 * topLight), bC = Math.floor(242 + 10 * topLight);
-        cg.addColorStop(0.0, `rgba(${rC}, ${gC}, ${bC}, 0.85)`);
-        cg.addColorStop(0.65, `rgba(${rC - 14}, ${gC - 12}, ${bC - 6}, 0.45)`);
-        cg.addColorStop(1.0, `rgba(${rC - 20}, ${gC - 16}, ${bC - 8}, 0.0)`);
-        cctx.fillStyle = cg;
-        cctx.beginPath(); cctx.arc(cx, cy, rad, 0, Math.PI * 2); cctx.fill();
+      // 4 Distinct Varied Cumulus Cloud Shapes spread widely across the cylinder sky
+      function makeCloudTex(seedVal) {
+        const cv = document.createElement('canvas');
+        cv.width = 512; cv.height = 256;
+        const ctx = cv.getContext('2d');
+        ctx.clearRect(0, 0, 512, 256);
+        let s = seedVal;
+        const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
+        const puffs = 28 + Math.floor(rnd() * 18);
+        const span = 220 + rnd() * 120;
+        for (let i = 0; i < puffs; i++) {
+          const t = i / puffs;
+          const cx = 256 + (rnd() - 0.5) * span;
+          const cy = 172 - t * (65 + rnd() * 35) + (rnd() - 0.5) * 24;
+          const rad = 22 + rnd() * 36;
+          const cg = ctx.createRadialGradient(cx, cy - rad * 0.25, rad * 0.1, cx, cy, rad);
+          const topLight = 0.55 + 0.45 * t;
+          const rC = Math.floor(225 + 30 * topLight), gC = Math.floor(230 + 23 * topLight), bC = Math.floor(242 + 10 * topLight);
+          cg.addColorStop(0.0, `rgba(${rC}, ${gC}, ${bC}, 0.80)`);
+          cg.addColorStop(0.60, `rgba(${rC - 14}, ${gC - 12}, ${bC - 6}, 0.38)`);
+          cg.addColorStop(1.0, `rgba(${rC - 20}, ${gC - 16}, ${bC - 8}, 0.0)`);
+          ctx.fillStyle = cg;
+          ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.fill();
+        }
+        const tex = new THREE.CanvasTexture(cv);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        return tex;
       }
-      const cloudTex = new THREE.CanvasTexture(cloudCanvas);
-      cloudTex.colorSpace = THREE.SRGBColorSpace;
-      const cloudMat = new THREE.SpriteMaterial({ map: cloudTex, transparent: true, opacity: 0.82, alphaTest: 0.04, depthWrite: false });
+      const cloudTexes = [makeCloudTex(5151), makeCloudTex(8319), makeCloudTex(1247), makeCloudTex(6793)];
       const cloudSprites = [];
-      for (let i = 0; i < 14; i++) {
+      for (let i = 0; i < 20; i++) {
+        const mat = new THREE.SpriteMaterial({ map: cloudTexes[i % 4], transparent: true, opacity: 0.72, depthWrite: false });
         const cAng = tRand() * Math.PI * 2;
-        const cR = 24 + tRand() * 32;
-        const cz = -260 + tRand() * 520;
-        const baseW = 24 + tRand() * 18;
-        const sp = new THREE.Sprite(cloudMat);
+        const cR = 16 + tRand() * 46;
+        const cz = -330 + (i / 20) * 660 + (tRand() - 0.5) * 30;
+        const baseW = 18 + tRand() * 24;
+        const sp = new THREE.Sprite(mat);
         sp.position.set(cR * Math.cos(cAng), cR * Math.sin(cAng), cz);
-        sp.scale.set(baseW, baseW * 0.48, 1);
+        sp.scale.set(baseW, baseW * (0.38 + tRand() * 0.22), 1);
         scene.add(sp);
-        cloudSprites.push({ sp, speed: 0.9 + tRand() * 1.1 });
+        cloudSprites.push({ sp, mat, speed: 0.7 + tRand() * 1.1 });
       }
 
       // =======================================================================
@@ -1504,10 +1564,13 @@
         if (grassMat && grassMat.userData.shader) grassMat.userData.shader.uniforms.uTime.value = t;
         if (leafMat && leafMat.userData.shader) leafMat.userData.shader.uniforms.uTime.value = t;
         filmLensPass.uniforms.uTime.value = t;
-        cloudMat.opacity = lerp(0.78, 0.16, nightVal);
+        starMat.uniforms.uTime.value = t;
+        const baseCloudOp = lerp(0.72, 0.14, nightVal);
         for (const cl of cloudSprites) {
           cl.sp.position.z += cl.speed * dt;
-          if (cl.sp.position.z > 280) cl.sp.position.z = -280;
+          if (cl.sp.position.z > 340) cl.sp.position.z = -340;
+          const fadeZ = 1.0 - smoothstep(260, 335, Math.abs(cl.sp.position.z));
+          cl.mat.opacity = baseCloudOp * fadeZ;
         }
 
         // Update animated GLB Stork flocks (always upright with world +Y up)
@@ -1539,19 +1602,19 @@
           const u = (cinT % LOOP_DURATION) / LOOP_DURATION;
           posCurve.getPointAt(u, tmpPos);
           lookCurve.getPointAt(u, tmpLook);
-          const trackBlend = smoothstep(0.46, 0.51, u) * (1.0 - smoothstep(0.60, 0.65, u));
+          const trackBlend = smoothstep(0.46, 0.52, u) * (1.0 - smoothstep(0.58, 0.64, u)) * 0.35;
           if (trackBlend > 0.001 && leaderPos) {
-            const cP = leaderPos.clone().addScaledVector(leaderFwd, -7.5).add(new THREE.Vector3(0, 2.2, 0));
-            const cL = leaderPos.clone().addScaledVector(leaderFwd, 11.0);
+            const cP = leaderPos.clone().addScaledVector(leaderFwd, -9.5).add(new THREE.Vector3(0, 2.5, 0));
+            const cL = leaderPos.clone().addScaledVector(leaderFwd, 12.0);
             tmpPos.lerp(cP, trackBlend);
             tmpLook.lerp(cL, trackBlend);
           }
-          camera.position.lerp(tmpPos, Math.min(1, dt * 1.6));
+          camera.position.lerp(tmpPos, Math.min(1, dt * 1.1));
           if (!camera.userData.smoothLook) camera.userData.smoothLook = tmpLook.clone();
-          camera.userData.smoothLook.lerp(tmpLook, Math.min(1, dt * 1.6));
+          camera.userData.smoothLook.lerp(tmpLook, Math.min(1, dt * 1.1));
           camera.up.set(0, 1, 0);
           camera.lookAt(camera.userData.smoothLook);
-          fadeOverlayEl.style.opacity = Math.max(smoothstep(0.96, 0.998, u), 1.0 - smoothstep(0.0, 0.025, u)).toFixed(3);
+          fadeOverlayEl.style.opacity = Math.max(smoothstep(0.925, 0.980, u), 1.0 - smoothstep(0.0, 0.030, u)).toFixed(3);
         } else {
           const speed = (keys['shift'] ? 28 : 45) * dt;
           const dir = new THREE.Vector3(Math.cos(yaw) * Math.cos(pitch), Math.sin(pitch), Math.sin(yaw) * Math.cos(pitch));
@@ -1567,10 +1630,6 @@
           camera.position.z = Math.max(-HALF_LENGTH + 8, Math.min(HALF_LENGTH - 8, camera.position.z));
           camera.lookAt(camera.position.clone().add(dir));
         }
-
-        // Keep shadow frustum centered near camera
-        sunLight.target.position.set(camera.position.x * 0.4, camera.position.y * 0.4, camera.position.z);
-        sunLight.position.copy(sunLight.target.position).addScaledVector(sunDir, 140);
 
         composer.render();
       }
