@@ -1447,47 +1447,19 @@
         audioDest = audioCtx.createMediaStreamDestination();
         masterGain.connect(audioDest);
 
-        // Wondrous Orchestral Track at gentle, non-intrusive volume (0.24)
-        bgmAudio = new Audio('./assets/music/wondrous_orchestral.mp3');
+        // Custom Uploaded BGM Track (never masked by white noise)
+        bgmAudio = new Audio('./assets/music/custom_bgm.mp3');
         bgmAudio.loop = true;
         bgmAudio.crossOrigin = 'anonymous';
         const bgmSrc = audioCtx.createMediaElementSource(bgmAudio);
         bgmGain = audioCtx.createGain();
-        bgmGain.gain.value = 0.24;
+        bgmGain.gain.value = 0.35;
         bgmSrc.connect(bgmGain).connect(masterGain);
-
-        // Shared Pink Noise Buffer (6 seconds) for organic Wind & Water
-        const bufLen = audioCtx.sampleRate * 6;
-        const noiseBuf = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
-        const data = noiseBuf.getChannelData(0);
-        let b0 = 0, b1 = 0, b2 = 0;
-        for (let i = 0; i < bufLen; i++) {
-          const w = Math.random() * 2 - 1;
-          b0 = 0.99765 * b0 + w * 0.0990460;
-          b1 = 0.96300 * b1 + w * 0.2965164;
-          b2 = 0.57000 * b2 + w * 1.0526913;
-          data[i] = (b0 + b1 + b2 + w * 0.1848) * 0.14;
-        }
-
-        // 1. Gentle River & Water Ripples (Only audible when flying low near the river/lake)
-        const riverSrc = audioCtx.createBufferSource();
-        riverSrc.buffer = noiseBuf; riverSrc.loop = true; riverSrc.playbackRate.value = 0.92;
-        const riverFilter = audioCtx.createBiquadFilter();
-        riverFilter.type = 'bandpass'; riverFilter.frequency.value = 640; riverFilter.Q.value = 0.75;
-        riverGain = audioCtx.createGain(); riverGain.gain.value = 0.0;
-        riverSrc.connect(riverFilter).connect(riverGain).connect(masterGain);
-        riverSrc.start();
-
-        const rippleSrc = audioCtx.createBufferSource();
-        rippleSrc.buffer = noiseBuf; rippleSrc.loop = true; rippleSrc.playbackRate.value = 1.15;
-        const rippleFilter = audioCtx.createBiquadFilter();
-        rippleFilter.type = 'bandpass'; rippleFilter.frequency.value = 1750; rippleFilter.Q.value = 1.2;
-        rippleGain = audioCtx.createGain(); rippleGain.gain.value = 0.0;
-        rippleSrc.connect(rippleFilter).connect(rippleGain).connect(masterGain);
-        rippleSrc.start();
 
         soundInited = true;
         nextBirdTime = audioCtx.currentTime + 2.0;
+        audioCtx._nextDrop = audioCtx.currentTime + 4.0;
+        audioCtx._nextCricket = audioCtx.currentTime + 5.0;
       }
 
       function enableSound(on) {
@@ -1499,7 +1471,7 @@
           if (on) bgmAudio.play().catch(() => {});
           else bgmAudio.pause();
         }
-        masterGain.gain.setTargetAtTime(on ? 0.72 : 0.0, audioCtx.currentTime, 0.35);
+        masterGain.gain.setTargetAtTime(on ? 0.78 : 0.0, audioCtx.currentTime, 0.35);
         soundBadgeEl.textContent = on ? 'SOUND: ON' : 'SOUND: OFF';
       }
 
@@ -1514,25 +1486,66 @@
         osc.frequency.exponentialRampToValueAtTime(base * 1.28, now + 0.05);
         osc.frequency.exponentialRampToValueAtTime(base * 0.94, now + 0.11);
         g.gain.setValueAtTime(0.0001, now);
-        g.gain.linearRampToValueAtTime(0.026, now + 0.015);
+        g.gain.linearRampToValueAtTime(0.030, now + 0.015);
         g.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
         osc.connect(g).connect(masterGain);
         osc.start(now);
         osc.stop(now + 0.15);
       }
 
+      function playWaterDrop() {
+        if (!audioCtx || !soundEnabled) return;
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        const f0 = 620 + Math.random() * 520;
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(f0, now);
+        osc.frequency.exponentialRampToValueAtTime(f0 * 1.55, now + 0.06);
+        g.gain.setValueAtTime(0.0001, now);
+        g.gain.linearRampToValueAtTime(0.025, now + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
+        osc.connect(g).connect(masterGain);
+        osc.start(now);
+        osc.stop(now + 0.08);
+      }
+
+      function playNightCricket() {
+        if (!audioCtx || !soundEnabled) return;
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(4100 + Math.random() * 350, now);
+        g.gain.setValueAtTime(0.0001, now);
+        for (let p = 0; p < 4; p++) {
+          const t0 = now + p * 0.075;
+          g.gain.linearRampToValueAtTime(0.012, t0 + 0.02);
+          g.gain.linearRampToValueAtTime(0.0001, t0 + 0.06);
+        }
+        osc.connect(g).connect(masterGain);
+        osc.start(now);
+        osc.stop(now + 0.34);
+      }
+
       function updateSoundscape(camY, nightVal) {
         if (!soundInited || !soundEnabled || !audioCtx) return;
         const now = audioCtx.currentTime;
-        const nearValley = Math.max(0, Math.min(1, (-camY - 62) / 30));
-        const lap = 0.5 + 0.5 * Math.sin(now * 1.7);
-        riverGain.gain.setTargetAtTime(nearValley * 0.12, now, 0.35);
-        rippleGain.gain.setTargetAtTime(nearValley * 0.08 * (0.65 + 0.35 * lap), now, 0.25);
+        const nearValley = Math.max(0, Math.min(1, (-camY - 60) / 30));
 
         if (nightVal < 0.35 && now >= nextBirdTime) {
           playBirdChirp();
           if (Math.random() < 0.45) setTimeout(playBirdChirp, 150);
-          nextBirdTime = now + 3.5 + Math.random() * 4.5;
+          nextBirdTime = now + 3.2 + Math.random() * 4.2;
+        }
+        if (nearValley > 0.3 && now >= audioCtx._nextDrop) {
+          playWaterDrop();
+          if (Math.random() < 0.35) setTimeout(playWaterDrop, 210);
+          audioCtx._nextDrop = now + 1.5 + Math.random() * 2.5;
+        }
+        if (nightVal > 0.55 && now >= audioCtx._nextCricket) {
+          playNightCricket();
+          audioCtx._nextCricket = now + 2.6 + Math.random() * 3.0;
         }
       }
 
