@@ -77,6 +77,7 @@
     <div>
       <span id="mode-badge" class="mode-badge">CINEMATIC AUTO-DRIVE</span>
       <span id="time-badge" class="mode-badge">AUTO CYCLE</span>
+      <span id="sound-badge" class="mode-badge">SOUND: CLICK / M</span>
     </div>
     <div class="controls">
       <div><kbd>C</kbd> 시네마틱 / 자유 탐색 전환</div>
@@ -84,7 +85,8 @@
         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 이동 · 마우스 드래그 시점 회전 · <kbd>Space</kbd>/<kbd>Shift</kbd> 상하
       </div>
       <div><kbd>1</kbd> 낮 · <kbd>2</kbd> 밤 · <kbd>3</kbd> 자동 시간 흐름</div>
-      <div><kbd>R</kbd> 90초 시네마틱 영상 녹화 (.webm)</div>
+      <div><kbd>M</kbd> 배경음악·효과음 켜기/끄기</div>
+      <div><kbd>R</kbd> 시네마틱 영상 녹화 (.webm)</div>
       <div><kbd>H</kbd> HUD 숨기기 (클린 모드)</div>
     </div>
     <div id="fps">FPS: --</div>
@@ -1426,7 +1428,120 @@
       }
 
       // =======================================================================
-      // 7. Camera, Input, 90s Spline & Recording
+      // 7. Wondrous Orchestral BGM (Enchanted Valley) + Prominent Nature Sounds
+      // =======================================================================
+      const soundBadgeEl = document.getElementById('sound-badge');
+      let audioCtx = null, masterGain = null, audioDest = null;
+      let windGain = null, windFilter = null, riverGain = null, rippleGain = null, bgmGain = null, bgmAudio = null;
+      let soundEnabled = false, soundInited = false;
+      let nextBirdTime = 0;
+
+      function initAudio() {
+        if (soundInited) return;
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        audioCtx = new AC();
+        masterGain = audioCtx.createGain();
+        masterGain.gain.value = 0.0;
+        masterGain.connect(audioCtx.destination);
+        audioDest = audioCtx.createMediaStreamDestination();
+        masterGain.connect(audioDest);
+
+        // Wondrous Orchestral Track at gentle, non-intrusive volume (0.24)
+        bgmAudio = new Audio('./assets/music/wondrous_orchestral.mp3');
+        bgmAudio.loop = true;
+        bgmAudio.crossOrigin = 'anonymous';
+        const bgmSrc = audioCtx.createMediaElementSource(bgmAudio);
+        bgmGain = audioCtx.createGain();
+        bgmGain.gain.value = 0.24;
+        bgmSrc.connect(bgmGain).connect(masterGain);
+
+        // Shared Pink Noise Buffer (6 seconds) for organic Wind & Water
+        const bufLen = audioCtx.sampleRate * 6;
+        const noiseBuf = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
+        const data = noiseBuf.getChannelData(0);
+        let b0 = 0, b1 = 0, b2 = 0;
+        for (let i = 0; i < bufLen; i++) {
+          const w = Math.random() * 2 - 1;
+          b0 = 0.99765 * b0 + w * 0.0990460;
+          b1 = 0.96300 * b1 + w * 0.2965164;
+          b2 = 0.57000 * b2 + w * 1.0526913;
+          data[i] = (b0 + b1 + b2 + w * 0.1848) * 0.14;
+        }
+
+        // 1. Gentle River & Water Ripples (Only audible when flying low near the river/lake)
+        const riverSrc = audioCtx.createBufferSource();
+        riverSrc.buffer = noiseBuf; riverSrc.loop = true; riverSrc.playbackRate.value = 0.92;
+        const riverFilter = audioCtx.createBiquadFilter();
+        riverFilter.type = 'bandpass'; riverFilter.frequency.value = 640; riverFilter.Q.value = 0.75;
+        riverGain = audioCtx.createGain(); riverGain.gain.value = 0.0;
+        riverSrc.connect(riverFilter).connect(riverGain).connect(masterGain);
+        riverSrc.start();
+
+        const rippleSrc = audioCtx.createBufferSource();
+        rippleSrc.buffer = noiseBuf; rippleSrc.loop = true; rippleSrc.playbackRate.value = 1.15;
+        const rippleFilter = audioCtx.createBiquadFilter();
+        rippleFilter.type = 'bandpass'; rippleFilter.frequency.value = 1750; rippleFilter.Q.value = 1.2;
+        rippleGain = audioCtx.createGain(); rippleGain.gain.value = 0.0;
+        rippleSrc.connect(rippleFilter).connect(rippleGain).connect(masterGain);
+        rippleSrc.start();
+
+        soundInited = true;
+        nextBirdTime = audioCtx.currentTime + 2.0;
+      }
+
+      function enableSound(on) {
+        if (!soundInited) initAudio();
+        if (!audioCtx) return;
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        soundEnabled = on;
+        if (bgmAudio) {
+          if (on) bgmAudio.play().catch(() => {});
+          else bgmAudio.pause();
+        }
+        masterGain.gain.setTargetAtTime(on ? 0.72 : 0.0, audioCtx.currentTime, 0.35);
+        soundBadgeEl.textContent = on ? 'SOUND: ON' : 'SOUND: OFF';
+      }
+
+      function playBirdChirp() {
+        if (!audioCtx || !soundEnabled) return;
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        const base = 2500 + Math.random() * 850;
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(base, now);
+        osc.frequency.exponentialRampToValueAtTime(base * 1.28, now + 0.05);
+        osc.frequency.exponentialRampToValueAtTime(base * 0.94, now + 0.11);
+        g.gain.setValueAtTime(0.0001, now);
+        g.gain.linearRampToValueAtTime(0.026, now + 0.015);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+        osc.connect(g).connect(masterGain);
+        osc.start(now);
+        osc.stop(now + 0.15);
+      }
+
+      function updateSoundscape(camY, nightVal) {
+        if (!soundInited || !soundEnabled || !audioCtx) return;
+        const now = audioCtx.currentTime;
+        const nearValley = Math.max(0, Math.min(1, (-camY - 62) / 30));
+        const lap = 0.5 + 0.5 * Math.sin(now * 1.7);
+        riverGain.gain.setTargetAtTime(nearValley * 0.12, now, 0.35);
+        rippleGain.gain.setTargetAtTime(nearValley * 0.08 * (0.65 + 0.35 * lap), now, 0.25);
+
+        if (nightVal < 0.35 && now >= nextBirdTime) {
+          playBirdChirp();
+          if (Math.random() < 0.45) setTimeout(playBirdChirp, 150);
+          nextBirdTime = now + 3.5 + Math.random() * 4.5;
+        }
+      }
+
+      // Auto-start audio on first user interaction (browser autoplay policy)
+      const autoStartAudio = () => { if (!soundInited) enableSound(true); };
+      window.addEventListener('pointerdown', autoStartAudio, { once: true });
+
+      // =======================================================================
+      // 8. Camera, Input, 150s Spline & Audio+Video Recording
       // =======================================================================
       let mode = 'cinematic', timeMode = 'auto';
       let yaw = Math.PI * 0.5, pitch = 0.08;
@@ -1440,7 +1555,11 @@
         modeBadgeEl.textContent = 'CINEMATIC AUTO-DRIVE'; modeBadgeEl.classList.remove('free');
         freeControlsEl.style.display = 'none'; timeBadgeEl.textContent = 'AUTO CYCLE';
         cinTimeOffset = performance.now() * 0.001; hudEl.classList.add('hidden');
-        const stream = renderer.domElement.captureStream(60);
+        if (!soundInited) enableSound(true);
+        const videoStream = renderer.domElement.captureStream(60);
+        const tracks = [...videoStream.getVideoTracks()];
+        if (audioDest) tracks.push(...audioDest.stream.getAudioTracks());
+        const stream = new MediaStream(tracks);
         const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
         const chunks = [];
         mediaRecorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12000000 });
@@ -1468,7 +1587,9 @@
         else if (k === '2') { timeMode = 'night'; timeBadgeEl.textContent = 'NIGHT'; }
         else if (k === '3') { timeMode = 'auto'; timeBadgeEl.textContent = 'AUTO CYCLE'; }
         else if (k === 'h') { hudEl.classList.toggle('hidden'); }
+        else if (k === 'm') { enableSound(!soundEnabled); }
         else if (k === 'r') { toggleVideoRecord(); }
+        if (!soundInited && k !== 'm') enableSound(true);
       });
       window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
       renderer.domElement.addEventListener('mousedown', (e) => { if (mode === 'free') { isDragging = true; lastMouseX = e.clientX; lastMouseY = e.clientY; } });
@@ -1631,6 +1752,7 @@
           camera.lookAt(camera.position.clone().add(dir));
         }
 
+        updateSoundscape(camera.position.y, nightVal);
         composer.render();
       }
       animate();
